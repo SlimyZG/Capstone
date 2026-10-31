@@ -1,140 +1,239 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { Package, Loader2, CheckCircle2 } from 'lucide-react';
+import { Package, Loader2, CheckCircle2, ArrowRight, Layers, AlertCircle } from 'lucide-react';
 import api from '../api';
+import PageHeader from '../components/PageHeader';
+import StatCard from '../components/StatCard';
+import StatusBadge from '../components/StatusBadge';
+import PriorityBadge from '../components/PriorityBadge';
+import SlaStatusBadge from '../components/SlaStatusBadge';
+import EmptyState from '../components/EmptyState';
+import LoadingSpinner from '../components/LoadingSpinner';
 
 const DeptStaffDashboard = () => {
   const { user } = useAuth();
   const [concerns, setConcerns] = useState([]);
+  const [recurringIncidents, setRecurringIncidents] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchQueue = async () => {
       try {
         const res = await api.get('/dept-staff/queue');
-        setConcerns(res.data.concerns);
+        setConcerns(res.data.concerns || []);
       } catch (err) {
         console.error(err);
       } finally {
         setLoading(false);
       }
     };
+
+    const fetchRecurring = async () => {
+      try {
+        const res = await api.get('/dept-staff/recurring-incidents');
+        setRecurringIncidents(res.data.data || []);
+      } catch (err) {
+        console.error('Failed to load dept staff recurring incidents', err);
+      }
+    };
+
     fetchQueue();
+    fetchRecurring();
   }, []);
 
   const newCount = concerns.filter(c => c.status === 'pending').length;
   const inProgressCount = concerns.filter(c => c.status === 'in_progress').length;
   const resolvedCount = concerns.filter(c => c.status === 'resolved').length;
 
-  const recent = [...concerns].sort((a, b) => new Date(b.submitted_at) - new Date(a.submitted_at)).slice(0, 5);
-
-  const getPriorityBadge = (priority) => {
-    switch ((priority || '').toLowerCase()) {
-      case 'high': return <span className="px-2.5 py-1 bg-red-50 text-red-600 rounded text-xs font-semibold border border-red-100">High</span>;
-      case 'medium': return <span className="px-2.5 py-1 bg-amber-50 text-amber-600 rounded text-xs font-semibold border border-amber-100">Medium</span>;
-      case 'low': return <span className="px-2.5 py-1 bg-slate-100 text-slate-600 rounded text-xs font-semibold">Low</span>;
-      default: return <span className="px-2.5 py-1 bg-slate-100 text-slate-500 rounded text-xs font-semibold">—</span>;
-    }
-  };
-
-  const getStatusBadge = (status) => {
-    switch (status) {
-      case 'pending': return <span className="px-2.5 py-1 bg-blue-50 text-blue-600 rounded text-xs font-semibold border border-blue-100">New</span>;
-      case 'in_progress': return <span className="px-2.5 py-1 bg-amber-50 text-amber-600 rounded text-xs font-semibold border border-amber-100">In Progress</span>;
-      case 'resolved': return <span className="px-2.5 py-1 bg-emerald-50 text-emerald-700 rounded text-xs font-semibold border border-emerald-100">Resolved</span>;
-      case 'escalated': return <span className="px-2.5 py-1 bg-purple-50 text-purple-600 rounded text-xs font-semibold border border-purple-100">Escalated</span>;
-      default: return <span className="px-2.5 py-1 bg-slate-100 text-slate-600 rounded text-xs font-semibold">{status}</span>;
-    }
-  };
+  const recent = [...concerns]
+    .sort((a, b) => new Date(b.submitted_at || b.created_at) - new Date(a.submitted_at || a.created_at))
+    .slice(0, 5);
 
   const formatDate = (d) => {
     if (!d) return '—';
     const date = new Date(d);
-    const now = new Date();
-    const diffMs = now - date;
-    const diffHrs = Math.floor(diffMs / 3600000);
-    const diffDays = Math.floor(diffMs / 86400000);
-    if (diffHrs < 1) return `Today, ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-    if (diffDays === 0) return `Today, ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-    if (diffDays === 1) return `Yesterday, ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+    if (isNaN(date.getTime())) return '—';
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   };
 
+  if (loading) {
+    return <LoadingSpinner message="Loading department dashboard..." fullPage />;
+  }
+
   return (
-    <div>
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-slate-900 tracking-tight">Welcome, Department Head.</h1>
-        <p className="text-slate-500 mt-1.5 text-sm">Here is the current overview of institutional concerns.</p>
+    <div className="space-y-6 sm:space-y-8">
+      <PageHeader
+        category="Department Portal"
+        title="Department Overview"
+        subtitle="Manage student concerns assigned to your operational or academic department, and review automated recurrence clusters."
+      />
+
+      {/* Summary KPI Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 sm:gap-6">
+        <StatCard
+          title="New Concerns"
+          value={newCount}
+          icon={Package}
+          badge={newCount > 0 ? `${newCount} Pending` : undefined}
+          subtitle="Awaiting initial assessment"
+          iconBg="bg-blue-50 text-blue-600 border-blue-100"
+        />
+        <StatCard
+          title="Under Investigation"
+          value={inProgressCount}
+          icon={Loader2}
+          subtitle="Currently active and investigated"
+          iconBg="bg-amber-50 text-amber-600 border-amber-100"
+        />
+        <StatCard
+          title="Resolved Concerns"
+          value={resolvedCount}
+          icon={CheckCircle2}
+          subtitle="Completed actions and closed tickets"
+          iconBg="bg-emerald-50 text-emerald-600 border-emerald-100"
+        />
       </div>
 
-      {/* Summary cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
-        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-          <div className="flex justify-between items-start mb-8">
-            <div className="h-10 w-10 bg-red-50 rounded-lg flex items-center justify-center border border-red-100">
-              <Package size={20} className="text-red-500" />
-            </div>
-            {newCount > 0 && (
-              <span className="px-2 py-0.5 bg-red-50 text-red-600 text-[10px] font-bold uppercase tracking-wider rounded-md border border-red-100">
-                +{newCount > 1 ? `${newCount}` : '1'} today
-              </span>
-            )}
+      {/* Recent Activity Table */}
+      <div className="card">
+        <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+          <div>
+            <h2 className="text-base font-bold text-slate-900">Recent Assigned Activity</h2>
+            <p className="text-xs text-slate-500 mt-0.5">Most recent concerns dispatched to your department</p>
           </div>
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">New Concerns</p>
-          <h3 className="text-4xl font-bold text-slate-900">{loading ? '—' : newCount}</h3>
-        </div>
-
-        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-          <div className="h-10 w-10 bg-amber-50 rounded-lg flex items-center justify-center border border-amber-100 mb-8">
-            <Loader2 size={20} className="text-amber-500" />
-          </div>
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">In Progress</p>
-          <h3 className="text-4xl font-bold text-slate-900">{loading ? '—' : inProgressCount}</h3>
-        </div>
-
-        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-          <div className="h-10 w-10 bg-blue-50 rounded-lg flex items-center justify-center border border-blue-100 mb-8">
-            <CheckCircle2 size={20} className="text-blue-600" />
-          </div>
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">Resolved</p>
-          <h3 className="text-4xl font-bold text-slate-900">{loading ? '—' : resolvedCount}</h3>
-        </div>
-      </div>
-
-      {/* Recent Activity */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center">
-          <h2 className="text-lg font-bold text-slate-900">Recent Activity</h2>
-          <Link to="/dept-staff/concerns" className="text-sm font-bold text-[#1e3a8a] hover:text-blue-800">View All</Link>
+          <Link to="/dept-staff/concerns" className="text-xs font-bold text-blue-600 hover:text-blue-800 transition-colors inline-flex items-center gap-1">
+            <span>View All ({concerns.length})</span>
+            <ArrowRight size={13} />
+          </Link>
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full text-sm text-left">
-            <thead className="text-[10px] uppercase text-slate-500 font-semibold border-b border-slate-100 bg-slate-50/60">
+            <thead className="text-[11px] uppercase text-slate-500 font-bold tracking-wider border-b border-slate-200 bg-slate-50">
               <tr>
-                <th className="px-6 py-3">ID</th>
-                <th className="px-6 py-3">Description</th>
-                <th className="px-6 py-3">Priority</th>
-                <th className="px-6 py-3">Status</th>
-                <th className="px-6 py-3">Date</th>
+                <th className="px-5 py-3.5">Concern ID</th>
+                <th className="px-5 py-3.5">Title</th>
+                <th className="px-5 py-3.5">Priority</th>
+                <th className="px-5 py-3.5">Status</th>
+                <th className="px-5 py-3.5">Date Submitted</th>
+                <th className="px-5 py-3.5 text-right">Action</th>
               </tr>
             </thead>
-            <tbody>
-              {loading ? (
-                <tr><td colSpan="5" className="px-6 py-8 text-center text-slate-400">Loading...</td></tr>
-              ) : recent.length === 0 ? (
-                <tr><td colSpan="5" className="px-6 py-8 text-center text-slate-400">No recent activity.</td></tr>
+            <tbody className="divide-y divide-slate-100">
+              {recent.length === 0 ? (
+                <tr>
+                  <td colSpan="6" className="p-0">
+                    <EmptyState
+                      title="No recent concerns"
+                      description="There are no active concerns currently assigned to your queue."
+                      className="border-0 shadow-none py-8"
+                    />
+                  </td>
+                </tr>
               ) : (
                 recent.map(c => (
-                  <tr key={c.concern_id} className="border-b border-slate-100 hover:bg-slate-50/60 transition-colors">
-                    <td className="px-6 py-4 font-bold text-[#1e3a8a] whitespace-nowrap">
-                      <Link to={`/dept-staff/concerns/${c.concern_id}`}>#C-{c.concern_id.toString().padStart(4, '0')}</Link>
+                  <tr key={c.concern_id} className="hover:bg-slate-50/80 transition-colors">
+                    <td className="px-5 py-4 font-mono font-bold text-xs text-slate-700 whitespace-nowrap">
+                      #C-{c.concern_id.toString().padStart(4, '0')}
                     </td>
-                    <td className="px-6 py-4 text-slate-700 max-w-xs truncate">{c.title}</td>
-                    <td className="px-6 py-4">{getPriorityBadge(c.priority)}</td>
-                    <td className="px-6 py-4">{getStatusBadge(c.status)}</td>
-                    <td className="px-6 py-4 text-slate-500 text-xs whitespace-nowrap">{formatDate(c.submitted_at)}</td>
+                    <td className="px-5 py-4 text-slate-900 font-semibold max-w-sm truncate">{c.title}</td>
+                    <td className="px-5 py-4 whitespace-nowrap">
+                      <PriorityBadge priority={c.priority} isOverridden={c.is_priority_overridden} size="xs" />
+                    </td>
+                    <td className="px-5 py-4 whitespace-nowrap">
+                      <div className="flex flex-wrap items-center gap-1">
+                        <StatusBadge status={c.status} size="xs" />
+                        {c.sla && !['resolved', 'closed', 'escalated'].includes(c.sla.state) && (
+                          <SlaStatusBadge sla={c.sla} status={c.status} size="xs" />
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-5 py-4 text-slate-500 text-xs whitespace-nowrap">{formatDate(c.submitted_at || c.created_at)}</td>
+                    <td className="px-5 py-4 text-right whitespace-nowrap">
+                      <Link
+                        to={`/dept-staff/concerns/${c.concern_id}`}
+                        className="btn-secondary py-1 px-2.5 text-xs inline-flex items-center gap-1 text-slate-700 hover:text-blue-600"
+                      >
+                        Manage
+                      </Link>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Department Recurring Incidents */}
+      <div className="card">
+        <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+          <div>
+            <h2 className="text-base font-bold text-slate-900">Department Recurring Incidents</h2>
+            <p className="text-xs text-slate-500 mt-0.5">Automated clusters of repeated student concerns in your department</p>
+          </div>
+          {recurringIncidents.length > 0 && (
+            <span className="px-2.5 py-0.5 bg-blue-50 text-blue-700 text-xs font-bold rounded-full border border-blue-200">
+              {recurringIncidents.length} Active Incidents
+            </span>
+          )}
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm text-left">
+            <thead className="text-[11px] uppercase text-slate-500 font-bold tracking-wider border-b border-slate-200 bg-slate-50">
+              <tr>
+                <th className="px-5 py-3.5">Incident Code</th>
+                <th className="px-5 py-3.5">Title</th>
+                <th className="px-5 py-3.5">Recurrence Tier</th>
+                <th className="px-5 py-3.5">Unique Students</th>
+                <th className="px-5 py-3.5">Priority</th>
+                <th className="px-5 py-3.5 text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {recurringIncidents.length === 0 ? (
+                <tr>
+                  <td colSpan="6" className="p-0">
+                    <EmptyState
+                      title="No recurring incidents detected"
+                      description="No recurring clusters currently meet the escalation threshold in your department."
+                      className="border-0 shadow-none py-8"
+                    />
+                  </td>
+                </tr>
+              ) : (
+                recurringIncidents.map(inc => (
+                  <tr key={inc.id} className="hover:bg-slate-50/80 transition-colors">
+                    <td className="px-5 py-4 font-mono font-bold text-[#1e3a8a] text-xs whitespace-nowrap">
+                      {inc.incident_code}
+                    </td>
+                    <td className="px-5 py-4 text-slate-900 font-semibold max-w-sm truncate">{inc.title}</td>
+                    <td className="px-5 py-4 whitespace-nowrap">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                        inc.recurrence_tier === 'major_critical' ? 'bg-red-600 text-white animate-pulse' :
+                        inc.recurrence_tier === 'critical' ? 'bg-red-100 text-red-700 border border-red-200' :
+                        inc.recurrence_tier === 'high' ? 'bg-amber-100 text-amber-800 border border-amber-200' :
+                        'bg-blue-50 text-blue-700 border border-blue-200'
+                      }`}>
+                        {inc.recurrence_tier?.replace('_', ' ')}
+                      </span>
+                    </td>
+                    <td className="px-5 py-4 font-semibold text-slate-800 whitespace-nowrap text-xs">
+                      {inc.unique_students_count || 0} distinct students
+                    </td>
+                    <td className="px-5 py-4 whitespace-nowrap">
+                      <PriorityBadge priority={inc.priority} size="xs" />
+                    </td>
+                    <td className="px-5 py-4 text-right whitespace-nowrap">
+                      <Link
+                        to={`/dept-staff/recurring-incidents/${inc.id}`}
+                        className="btn-secondary py-1 px-2.5 text-xs text-blue-600 hover:text-blue-800 inline-flex items-center gap-1"
+                      >
+                        Inspect
+                      </Link>
+                    </td>
                   </tr>
                 ))
               )}

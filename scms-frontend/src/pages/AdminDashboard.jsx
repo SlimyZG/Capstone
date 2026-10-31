@@ -275,10 +275,10 @@ const AdminDashboard = () => {
                       <div className="text-sm text-slate-500">{u.email}</div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                        u.role === 'admin' ? 'bg-red-100 text-red-800' :
-                        u.role === 'dean' ? 'bg-purple-100 text-purple-800' :
-                        u.role === 'dept_staff' ? 'bg-blue-100 text-blue-800' : 'bg-green-100 text-green-800'
+                      <span className={`px-2.5 py-0.5 inline-flex text-xs leading-5 font-semibold rounded-full border ${
+                        u.role === 'admin' ? 'bg-red-50 text-red-700 border-red-200' :
+                        u.role === 'dean' ? 'bg-blue-50 text-[#1e3a8a] border-blue-200' :
+                        u.role === 'dept_staff' ? 'bg-slate-100 text-slate-700 border-slate-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'
                       }`}>
                         {u.role.replace('_', ' ')}
                       </span>

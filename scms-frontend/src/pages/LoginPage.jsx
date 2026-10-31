@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { Eye, EyeOff } from 'lucide-react';
@@ -13,8 +13,19 @@ const LoginPage = () => {
   const [isForgotPassword, setIsForgotPassword] = useState(false);
   const [forgotEmail, setForgotEmail] = useState('');
   const [isResetting, setIsResetting] = useState(false);
-  const { login } = useAuth();
+  const { user, login } = useAuth();
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (user) {
+      if (user.role === 'student') navigate('/student', { replace: true });
+      else if (user.role === 'admin') navigate('/admin', { replace: true });
+      else if (user.role === 'sao') navigate('/sao', { replace: true });
+      else if (user.role === 'dean') navigate('/dean', { replace: true });
+      else if (user.role === 'dept_staff') navigate('/dept-staff', { replace: true });
+      else navigate('/', { replace: true });
+    }
+  }, [user, navigate]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -24,8 +35,10 @@ const LoginPage = () => {
       const data = await login({ login: loginValue, password });
       if (data.user.role === 'student') navigate('/student');
       else if (data.user.role === 'admin') navigate('/admin');
+      else if (data.user.role === 'sao') navigate('/sao');
       else if (data.user.role === 'dean') navigate('/dean');
       else if (data.user.role === 'dept_staff') navigate('/dept-staff');
+      else navigate('/');
     } catch (err) {
       setError(err.response?.data?.errors?.login?.[0] || 'Login failed. Please check your credentials.');
     }

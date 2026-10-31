@@ -27,17 +27,31 @@ class Concern extends Model
         'academic_unit_id',
         'target_type',
         'dept_id',
+        'recurring_incident_id',
         'title',
         'description',
         'category',
+        'issue_category',
+        'issue_subcategory',
+        'classification_explanation',
+        'classification_confidence',
+        'workflow_type',
         'status',
         'submitted_at',
         'last_updated',
         'resolved_at',
+        'forwarded_to_cad_at',
         'is_anonymous',
         'attachments',
         'transferred_from',
         'priority',
+        'ai_priority',
+        'ai_priority_explanation',
+        'is_priority_overridden',
+        'priority_override_reason',
+        'priority_overridden_by',
+        'priority_overridden_at',
+        'critical_notified_at',
         'sentiment_score',
         'sentiment_label',
         'ai_summary',
@@ -52,9 +66,29 @@ class Concern extends Model
             'submitted_at' => 'datetime',
             'last_updated' => 'datetime',
             'resolved_at' => 'datetime',
+            'forwarded_to_cad_at' => 'datetime',
             'sentiment_score' => 'float',
+            'classification_confidence' => 'float',
+            'is_priority_overridden' => 'boolean',
+            'priority_overridden_at' => 'datetime',
+            'critical_notified_at' => 'datetime',
             'attachments' => 'array',
         ];
+    }
+
+    /**
+     * Invalidate the cached historical resolution dataset whenever a concern
+     * is created, updated (e.g. resolved, priority overridden, transferred), or deleted.
+     */
+    protected static function booted(): void
+    {
+        static::saved(function () {
+            \App\Services\ResolutionPredictionService::flushCache();
+        });
+
+        static::deleted(function () {
+            \App\Services\ResolutionPredictionService::flushCache();
+        });
     }
 
     /**
@@ -95,5 +129,21 @@ class Concern extends Model
     public function messages(): HasMany
     {
         return $this->hasMany(Message::class, 'concern_id', 'concern_id');
+    }
+
+    /**
+     * Get the user who manually overrode the priority.
+     */
+    public function priorityOverriddenBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'priority_overridden_by');
+    }
+
+    /**
+     * Get the recurring incident this concern is linked to.
+     */
+    public function recurringIncident(): BelongsTo
+    {
+        return $this->belongsTo(RecurringIncident::class, 'recurring_incident_id');
     }
 }

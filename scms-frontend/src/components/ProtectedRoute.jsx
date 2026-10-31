@@ -16,6 +16,7 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
     // Redirect based on role if unauthorized
     if (user.role === 'student') return <Navigate to="/student" replace />;
     if (user.role === 'admin') return <Navigate to="/admin" replace />;
+    if (user.role === 'sao') return <Navigate to="/sao" replace />;
     if (user.role === 'dean') return <Navigate to="/dean" replace />;
     if (user.role === 'dept_staff') return <Navigate to="/dept-staff" replace />;
   }

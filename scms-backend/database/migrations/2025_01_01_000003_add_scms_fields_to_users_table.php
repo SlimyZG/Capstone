@@ -13,7 +13,7 @@ return new class extends Migration
     {
         Schema::table('users', function (Blueprint $table) {
             $table->string('student_id_number', 8)->unique()->nullable()->after('name');
-            $table->enum('role', ['student', 'admin', 'dean', 'dept_staff'])->default('student')->after('email');
+            $table->enum('role', ['student', 'admin', 'dean', 'dept_staff', 'sao'])->default('student')->after('email');
             $table->foreignId('academic_unit_id')->nullable()->constrained('academic_units')->nullOnDelete()->after('role');
             $table->foreignId('dept_id')->nullable()->constrained('departments')->nullOnDelete()->after('academic_unit_id');
         });

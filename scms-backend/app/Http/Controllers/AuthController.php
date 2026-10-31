@@ -7,6 +7,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\ValidationException;
+use Illuminate\Validation\Rule;
 
 class AuthController extends Controller
 {
@@ -23,6 +24,9 @@ class AuthController extends Controller
                 'size:8',
                 'regex:/^\d{8}$/',
                 'unique:users,student_id_number',
+                Rule::exists('class_lists', 'student_id_number')->where(function ($query) use ($request) {
+                    return $query->where('academic_unit_id', $request->input('academic_unit_id'));
+                }),
             ],
             'email' => 'required|string|email|max:255|unique:users,email',
             'password' => 'required|string|min:8|confirmed',
@@ -31,6 +35,7 @@ class AuthController extends Controller
             'student_id_number.size' => 'Student ID must be exactly 8 digits.',
             'student_id_number.regex' => 'Student ID must contain only numeric digits.',
             'student_id_number.unique' => 'This Student ID is already registered.',
+            'student_id_number.exists' => 'This Student ID is not in the class list for the selected department.',
         ]);
 
         $user = User::create([

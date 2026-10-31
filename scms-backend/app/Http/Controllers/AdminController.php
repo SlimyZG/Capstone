@@ -115,6 +115,13 @@ class AdminController extends Controller
             ], 403);
         }
 
+        // Enforce SAO cannot delete accounts
+        if ($request->user()->role === 'sao') {
+            return response()->json([
+                'message' => 'SAO cannot delete user accounts. Historical records and account preservation are enforced.',
+            ], 403);
+        }
+
         // Optional: Prevent deleting other admins if desired
         if ($user->role === 'admin') {
             return response()->json([
@@ -141,14 +148,28 @@ class AdminController extends Controller
             return response()->json(['message' => 'Cannot modify other admin accounts.'], 403);
         }
 
+        // Role-based restrictions if requester is SAO
+        if ($request->user()->role === 'sao') {
+            if ($user->role === 'admin' || ($user->role === 'sao' && $user->id !== $request->user()->id)) {
+                return response()->json(['message' => 'SAO cannot modify Admin or other SAO accounts.'], 403);
+            }
+            if ($user->id === $request->user()->id && isset($request->role) && $request->role !== 'sao') {
+                return response()->json(['message' => 'You cannot change your own SAO role.'], 403);
+            }
+        }
+
         $validated = $request->validate([
             'name' => 'sometimes|string|max:255',
             'email' => 'sometimes|string|email|max:255|unique:users,email,' . $user->id,
             'password' => 'nullable|string|min:8',
-            'role' => 'sometimes|in:dean,dept_staff,student,admin',
+            'role' => 'sometimes|in:dean,dept_staff,student,admin,sao',
             'academic_unit_id' => 'nullable|exists:academic_units,id',
             'dept_id' => 'nullable|exists:departments,id',
         ]);
+
+        if ($request->user()->role === 'sao' && isset($validated['role']) && !in_array($validated['role'], ['dean', 'dept_staff'])) {
+            return response()->json(['message' => 'SAO can only assign Dean or Department Staff roles.'], 403);
+        }
 
         $newRole = $validated['role'] ?? $user->role;
         $newUnit = array_key_exists('academic_unit_id', $validated) ? $validated['academic_unit_id'] : $user->academic_unit_id;

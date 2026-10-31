@@ -1,140 +1,334 @@
-import { useState, useEffect } from 'react';
-import { Search, SlidersHorizontal, Upload, UserPlus } from 'lucide-react';
+import { useState, useEffect, useMemo } from 'react';
+import { Search, Upload, UserPlus, X, FolderOpen, AlertCircle } from 'lucide-react';
 import api from '../api';
+import PageHeader from '../components/PageHeader';
+import EmptyState from '../components/EmptyState';
+import PaginationControls from '../components/PaginationControls';
+import LoadingSpinner from '../components/LoadingSpinner';
 
 const DeanClassList = () => {
   const [students, setStudents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
 
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [showUploadModal, setShowUploadModal] = useState(false);
+  
+  const [newStudentId, setNewStudentId] = useState('');
+  const [uploadFile, setUploadFile] = useState(null);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
+
+  const [currentPage, setCurrentPage] = useState(1);
+  const pageSize = 12;
+
+  const fetchStudents = async () => {
+    setLoading(true);
+    try {
+      const res = await api.get('/dean/class-list');
+      setStudents(res.data.class_list || []);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    // Fetch concerns to infer unique students in the academic unit
-    const fetchStudents = async () => {
-      try {
-        const res = await api.get('/dean/inbox');
-        const all = [...(res.data.direct || []), ...(res.data.escalated || [])];
-        // Build unique student list from concerns
-        const map = new Map();
-        all.forEach(c => {
-          if (c.student && !map.has(c.student.id)) {
-            map.set(c.student.id, c.student);
-          }
-        });
-        setStudents(Array.from(map.values()));
-      } catch (err) {
-        console.error(err);
-      } finally {
-        setLoading(false);
-      }
-    };
     fetchStudents();
   }, []);
 
-  const getInitials = (name) => (name || '?').split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
+  const handleAddStudent = async (e) => {
+    e.preventDefault();
+    setErrorMsg('');
+    setActionLoading(true);
+    try {
+      await api.post('/dean/class-list', { student_id_number: newStudentId });
+      setNewStudentId('');
+      setShowAddModal(false);
+      fetchStudents();
+    } catch (err) {
+      setErrorMsg(err.response?.data?.message || 'Failed to add student. Ensure ID is 8 digits and not duplicate.');
+    } finally {
+      setActionLoading(false);
+    }
+  };
 
-  const avatarColors = [
-    'bg-blue-100 text-blue-700',
-    'bg-amber-100 text-amber-700',
-    'bg-emerald-100 text-emerald-700',
-    'bg-purple-100 text-purple-700',
-    'bg-red-100 text-red-700',
-    'bg-teal-100 text-teal-700',
-    'bg-slate-200 text-slate-600',
-  ];
+  const handleUploadFile = async (e) => {
+    e.preventDefault();
+    if (!uploadFile) return;
+    setErrorMsg('');
+    setActionLoading(true);
 
-  const filtered = students.filter(s =>
-    (s.student_id_number || '').toString().includes(searchTerm) ||
-    (s.name || '').toLowerCase().includes(searchTerm.toLowerCase())
+    const formData = new FormData();
+    formData.append('file', uploadFile);
+
+    try {
+      await api.post('/dean/class-list/upload', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setUploadFile(null);
+      setShowUploadModal(false);
+      fetchStudents();
+    } catch (err) {
+      setErrorMsg(err.response?.data?.message || 'Failed to upload file.');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const getInitials = (name) => {
+    if (!name || name === 'Pending Registration') return '?';
+    return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
+  };
+
+  const filtered = useMemo(() => {
+    return students.filter(s =>
+      (s.student_id_number || '').toString().includes(searchTerm) ||
+      (s.name || '').toLowerCase().includes(searchTerm.toLowerCase())
+    );
+  }, [students, searchTerm]);
+
+  const totalPages = Math.ceil(filtered.length / pageSize);
+  const paginated = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filtered.slice(start, start + pageSize);
+  }, [filtered, currentPage, pageSize]);
+
+  const headerActions = (
+    <div className="flex items-center gap-2">
+      <button 
+        onClick={() => setShowUploadModal(true)}
+        className="btn-secondary text-xs py-2 px-3"
+      >
+        <Upload size={14} className="mr-1.5" /> Upload CSV
+      </button>
+      <button 
+        onClick={() => setShowAddModal(true)}
+        className="btn-dark text-xs py-2 px-3.5"
+      >
+        <UserPlus size={14} className="mr-1.5" /> Add Student
+      </button>
+    </div>
   );
 
   return (
-    <div>
-      <div className="flex justify-between items-start mb-6">
-        <h1 className="text-2xl font-bold text-slate-900">Class List</h1>
-        <div className="flex gap-2">
-          <button className="flex items-center gap-2 px-3 py-2 border border-slate-200 rounded-lg bg-white text-sm font-medium text-slate-600 hover:bg-slate-50 shadow-sm">
-            <Upload size={14} /> Upload Class List
-          </button>
-          <button className="flex items-center gap-2 px-3 py-2 bg-[#1e3a8a] rounded-lg text-sm font-medium text-white hover:bg-[#152960] shadow-sm">
-            <UserPlus size={14} /> Add Student
-          </button>
-        </div>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        category="Academic Affairs"
+        title="College Class List"
+        subtitle="Roster of authorized students enrolled in your academic unit with registration status."
+        breadcrumbs={[
+          { label: 'Dashboard', path: '/dean' },
+          { label: 'Class List' }
+        ]}
+        actions={headerActions}
+      />
 
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+      <div className="card overflow-hidden">
         {/* Search */}
-        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between gap-4">
-          <div className="relative flex-1 max-w-sm">
-            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+        <div className="p-4 sm:p-5 border-b border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 bg-slate-50/50">
+          <div>
+            <h2 className="text-base font-bold text-slate-900">Enrolled Students ({students.length})</h2>
+            <p className="text-xs text-slate-500 mt-0.5">Filter by 8-digit Student ID Number or Student Name</p>
+          </div>
+          <div className="relative w-full sm:w-72">
+            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
               type="text"
-              placeholder="Search Student ID or Name"
-              className="w-full pl-8 pr-4 py-2 border border-slate-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+              placeholder="Search Student ID or Name..."
+              className="input-field pl-9"
               value={searchTerm}
-              onChange={e => setSearchTerm(e.target.value)}
+              onChange={e => {
+                setSearchTerm(e.target.value);
+                setCurrentPage(1);
+              }}
             />
           </div>
-          <button className="flex items-center gap-1.5 px-3 py-2 border border-slate-200 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-50">
-            <SlidersHorizontal size={13} /> Filter
-          </button>
         </div>
 
         {/* Table */}
         <div className="overflow-x-auto">
           <table className="w-full text-sm text-left">
-            <thead className="text-[10px] uppercase text-slate-400 font-semibold bg-slate-50/60 border-b border-slate-100">
+            <thead className="text-[11px] uppercase text-slate-500 font-bold tracking-wider bg-slate-50 border-b border-slate-200">
               <tr>
-                <th className="px-6 py-3">Student ID</th>
-                <th className="px-6 py-3">Student Name</th>
-                <th className="px-6 py-3">Email</th>
+                <th className="px-5 py-3.5">Student ID</th>
+                <th className="px-5 py-3.5">Full Name</th>
+                <th className="px-5 py-3.5">Account Status</th>
+                <th className="px-5 py-3.5">Date Enrolled</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="divide-y divide-slate-100">
               {loading ? (
-                <tr><td colSpan="3" className="px-6 py-10 text-center text-slate-400">Loading students...</td></tr>
+                <tr>
+                  <td colSpan="4" className="px-6 py-12 text-center text-slate-400 text-sm">
+                    Loading student roster...
+                  </td>
+                </tr>
               ) : filtered.length === 0 ? (
                 <tr>
-                  <td colSpan="3" className="px-6 py-12 text-center">
-                    <p className="text-slate-400 text-sm">No students found in your academic unit.</p>
-                    <p className="text-slate-300 text-xs mt-1">Students appear here when they submit concerns.</p>
+                  <td colSpan="4" className="p-0">
+                    <EmptyState
+                      icon={FolderOpen}
+                      title="No students found"
+                      description={searchTerm ? "No students match your search criteria." : "No students currently enrolled in the class list."}
+                      className="border-0 shadow-none py-12"
+                    />
                   </td>
                 </tr>
               ) : (
-                filtered.map((s, idx) => {
-                  const colorClass = avatarColors[idx % avatarColors.length];
-                  return (
-                    <tr key={s.id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
-                      <td className="px-6 py-4 font-semibold text-slate-700">{s.student_id_number || '—'}</td>
-                      <td className="px-6 py-4">
-                        <div className="flex items-center gap-3">
-                          <div className={`h-8 w-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold ${colorClass}`}>
-                            {getInitials(s.name)}
-                          </div>
-                          <span className="font-medium text-slate-800">{s.name}</span>
+                paginated.map((s) => (
+                  <tr key={s.id} className="hover:bg-slate-50/80 transition-colors">
+                    <td className="px-5 py-4 font-mono font-bold text-xs text-slate-700 whitespace-nowrap">
+                      {s.student_id_number}
+                    </td>
+                    <td className="px-5 py-4">
+                      <div className="flex items-center gap-2.5">
+                        <div className="h-7 w-7 rounded-full bg-blue-100 text-[#1e3a8a] flex items-center justify-center text-xs font-bold shrink-0">
+                          {getInitials(s.name)}
                         </div>
-                      </td>
-                      <td className="px-6 py-4 text-slate-500 text-sm">
-                        {s.student_id_number ? `${s.student_id_number.toString().toLowerCase()}@university.edu` : '—'}
-                      </td>
-                    </tr>
-                  );
-                })
+                        <span className="font-semibold text-slate-900 text-xs">
+                          {s.name || 'Pending Registration'}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="px-5 py-4 whitespace-nowrap">
+                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${
+                        s.is_registered 
+                          ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' 
+                          : 'bg-amber-50 text-amber-700 border border-amber-200'
+                      }`}>
+                        {s.is_registered ? 'Registered Account' : 'Pending First Login'}
+                      </span>
+                    </td>
+                    <td className="px-5 py-4 text-xs text-slate-500 whitespace-nowrap">
+                      {s.created_at ? new Date(s.created_at).toLocaleDateString() : '—'}
+                    </td>
+                  </tr>
+                ))
               )}
             </tbody>
           </table>
         </div>
 
-        {!loading && filtered.length > 0 && (
-          <div className="px-6 py-4 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500 bg-white">
-            <span>Showing 1 to {filtered.length} of {filtered.length} entries</span>
-            <div className="flex items-center gap-1">
-              <button className="h-7 w-7 rounded border border-slate-200 flex items-center justify-center text-slate-400 hover:bg-slate-50">‹</button>
-              <button className="h-7 w-7 rounded border border-slate-200 bg-[#1e3a8a] text-white flex items-center justify-center text-xs font-bold">1</button>
-              <button className="h-7 w-7 rounded border border-slate-200 flex items-center justify-center text-slate-400 hover:bg-slate-50">›</button>
-            </div>
-          </div>
-        )}
+        {/* Pagination */}
+        <PaginationControls
+          currentPage={currentPage}
+          totalPages={totalPages}
+          totalItems={filtered.length}
+          pageSize={pageSize}
+          onPageChange={setCurrentPage}
+        />
       </div>
+
+      {/* Add Student Modal */}
+      {showAddModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-lg border border-slate-200 max-w-sm w-full p-6 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+              <h3 className="text-base font-bold text-slate-900">Add Student to Roster</h3>
+              <button onClick={() => setShowAddModal(false)} className="text-slate-400 hover:text-slate-600">
+                <X size={18} />
+              </button>
+            </div>
+
+            {errorMsg && (
+              <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg mb-4 flex items-center gap-1.5">
+                <AlertCircle size={14} className="shrink-0" />
+                <span>{errorMsg}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleAddStudent} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                  Student ID Number (8 Digits) <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  maxLength={8}
+                  placeholder="e.g. 20231234"
+                  required
+                  className="input-field"
+                  value={newStudentId}
+                  onChange={e => setNewStudentId(e.target.value)}
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowAddModal(false)}
+                  className="btn-secondary text-xs"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={actionLoading}
+                  className="btn-dark text-xs"
+                >
+                  {actionLoading ? 'Adding...' : 'Add Student'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Upload CSV Modal */}
+      {showUploadModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-lg border border-slate-200 max-w-sm w-full p-6 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+              <h3 className="text-base font-bold text-slate-900">Upload Class List CSV</h3>
+              <button onClick={() => setShowUploadModal(false)} className="text-slate-400 hover:text-slate-600">
+                <X size={18} />
+              </button>
+            </div>
+
+            {errorMsg && (
+              <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg mb-4 flex items-center gap-1.5">
+                <AlertCircle size={14} className="shrink-0" />
+                <span>{errorMsg}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleUploadFile} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                  Select CSV File <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="file"
+                  accept=".csv,.txt"
+                  required
+                  className="input-field text-xs py-2"
+                  onChange={e => setUploadFile(e.target.files[0])}
+                />
+                <p className="text-[11px] text-slate-500 mt-1">File must contain student ID numbers in the first column.</p>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowUploadModal(false)}
+                  className="btn-secondary text-xs"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={actionLoading || !uploadFile}
+                  className="btn-dark text-xs"
+                >
+                  {actionLoading ? 'Uploading...' : 'Upload & Import'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

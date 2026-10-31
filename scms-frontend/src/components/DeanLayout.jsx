@@ -1,11 +1,25 @@
+import { useState } from 'react';
 import { Link, useLocation, useNavigate, Outlet } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { LayoutDashboard, List, AlertTriangle, BarChart2, LogOut, Bell, User } from 'lucide-react';
+import NotificationBell from './NotificationBell';
+import { 
+  LayoutDashboard, 
+  List, 
+  AlertTriangle, 
+  BarChart2, 
+  Activity, 
+  LogOut, 
+  User,
+  Menu,
+  X,
+  GraduationCap
+} from 'lucide-react';
 
-const DeanLayout = () => {
+const DeanLayout = ({ children }) => {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const handleLogout = async () => {
     await logout();
@@ -13,81 +27,167 @@ const DeanLayout = () => {
   };
 
   const navItems = [
-    { name: 'Dashboard', path: '/dean', icon: LayoutDashboard },
-    { name: 'Class List', path: '/dean/class-list', icon: List },
-    { name: 'Escalated Concerns', path: '/dean/escalated', icon: AlertTriangle },
-    { name: 'Reports', path: '/dean/reports', icon: BarChart2 },
+    { name: 'Dashboard',          path: '/dean',           icon: LayoutDashboard },
+    { name: 'Class List',         path: '/dean/class-list', icon: List },
+    { name: 'Escalated Concerns', path: '/dean/escalated',  icon: AlertTriangle },
+    { name: 'Reports',            path: '/dean/reports',    icon: BarChart2 },
+    { name: 'Sentiment Analytics', path: '/analytics',      icon: Activity },
   ];
 
   const initials = user?.name?.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) || 'D';
 
+  const renderNavLinks = (onItemClick) => (
+    <ul className="space-y-1">
+      {navItems.map((item) => {
+        const Icon = item.icon;
+        const isActive = location.pathname === item.path || 
+          (item.path === '/dean/escalated' && location.pathname.startsWith('/dean/concerns/'));
+        return (
+          <li key={item.name}>
+            <Link
+              to={item.path}
+              onClick={onItemClick}
+              className={`flex items-center px-3 py-2.5 rounded-lg text-sm font-semibold transition-colors ${
+                isActive
+                  ? 'bg-blue-50 text-[#1e3a8a] border-l-4 border-[#1e3a8a]'
+                  : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900 border-l-4 border-transparent'
+              }`}
+            >
+              <Icon size={18} className={`mr-3 shrink-0 ${isActive ? 'text-[#1e3a8a]' : 'text-slate-400'}`} />
+              {item.name}
+            </Link>
+          </li>
+        );
+      })}
+    </ul>
+  );
+
   return (
-    <div className="min-h-screen bg-[#f5f6fa] flex">
-      {/* Sidebar */}
-      <aside className="w-56 bg-white border-r border-slate-200 flex flex-col hidden md:flex">
-        <div className="p-5 pb-4">
-          <div className="flex items-center gap-3 mb-1">
-            <div className="h-9 w-9 rounded-full bg-[#1e3a8a] text-white flex items-center justify-center font-bold text-sm flex-shrink-0">
-              {initials}
+    <div className="min-h-screen bg-[#f8fafc] flex">
+      {/* Desktop Sidebar */}
+      <aside className="w-64 bg-white border-r border-slate-200 flex-col hidden md:flex shrink-0">
+        <div className="p-6 border-b border-slate-100">
+          <div className="flex items-center gap-3">
+            <div className="h-10 w-10 rounded-lg bg-[#1e3a8a] text-white flex items-center justify-center font-bold text-sm shrink-0 shadow-xs">
+              <GraduationCap size={20} />
             </div>
-            <div>
-              <h1 className="text-base font-bold text-[#1e3a8a] leading-tight">Academic Affairs</h1>
-              <p className="text-[10px] text-slate-500 leading-tight">Dean's Office</p>
+            <div className="min-w-0">
+              <h1 className="text-base font-bold text-[#1e3a8a] truncate leading-tight">Academic Affairs</h1>
+              <p className="text-xs text-slate-500 font-medium">Dean's Portal</p>
             </div>
           </div>
         </div>
 
-        <nav className="flex-1 px-3 mt-2">
-          <ul className="space-y-0.5">
-            {navItems.map((item) => {
-              const Icon = item.icon;
-              const isActive = location.pathname === item.path;
-              return (
-                <li key={item.name}>
-                  <Link
-                    to={item.path}
-                    className={`flex items-center px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                      isActive
-                        ? 'bg-[#1e3a8a] text-white'
-                        : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                    }`}
-                  >
-                    <Icon size={16} className={`mr-2.5 flex-shrink-0 ${isActive ? 'text-white' : 'text-slate-400'}`} />
-                    {item.name}
-                  </Link>
-                </li>
-              );
-            })}
-          </ul>
+        <nav className="flex-1 px-3 py-4">
+          {renderNavLinks()}
+        </nav>
+
+        <div className="p-4 border-t border-slate-200">
+          <div className="flex items-center gap-3 px-3 py-2 mb-2">
+            <div className="h-8 w-8 rounded-full bg-blue-100 text-[#1e3a8a] flex items-center justify-center font-bold text-xs shrink-0">
+              {initials}
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-bold text-slate-900 truncate">{user?.name || 'Dean'}</p>
+              <p className="text-[11px] text-slate-500 truncate">Dean / Academic</p>
+            </div>
+          </div>
+          <button
+            onClick={handleLogout}
+            className="flex items-center w-full px-3 py-2 text-sm font-semibold text-slate-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors"
+          >
+            <LogOut size={16} className="mr-3 text-slate-400" />
+            Sign Out
+          </button>
+        </div>
+      </aside>
+
+      {/* Mobile Drawer Backdrop */}
+      {mobileMenuOpen && (
+        <div
+          className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs z-40 md:hidden animate-in fade-in duration-200"
+          onClick={() => setMobileMenuOpen(false)}
+        />
+      )}
+
+      {/* Mobile Drawer Sidebar */}
+      <aside
+        className={`fixed inset-y-0 left-0 w-64 bg-white border-r border-slate-200 z-50 flex flex-col md:hidden transform transition-transform duration-200 ease-in-out ${
+          mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'
+        }`}
+      >
+        <div className="p-5 flex items-center justify-between border-b border-slate-100">
+          <div className="flex items-center gap-2.5">
+            <div className="h-9 w-9 rounded-lg bg-[#1e3a8a] text-white flex items-center justify-center font-bold text-sm shrink-0">
+              <GraduationCap size={18} />
+            </div>
+            <div>
+              <h1 className="text-base font-bold text-[#1e3a8a] leading-tight">Academic Affairs</h1>
+              <p className="text-xs text-slate-500">Dean's Portal</p>
+            </div>
+          </div>
+          <button
+            onClick={() => setMobileMenuOpen(false)}
+            className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100"
+            aria-label="Close navigation"
+          >
+            <X size={20} />
+          </button>
+        </div>
+
+        <nav className="flex-1 px-3 py-4">
+          {renderNavLinks(() => setMobileMenuOpen(false))}
         </nav>
 
         <div className="p-4 border-t border-slate-200">
           <button
             onClick={handleLogout}
-            className="flex items-center w-full px-3 py-2.5 text-sm font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-lg transition-colors"
+            className="flex items-center w-full px-3 py-2 text-sm font-semibold text-slate-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition-colors"
           >
-            <LogOut size={16} className="mr-2.5 text-slate-400" />
-            Logout
+            <LogOut size={16} className="mr-3 text-slate-400" />
+            Sign Out
           </button>
         </div>
       </aside>
 
-      {/* Main Content */}
+      {/* Main Content Area */}
       <main className="flex-1 flex flex-col min-w-0">
         {/* Top Header */}
-        <header className="h-14 border-b border-slate-200 flex items-center justify-end px-6 bg-white gap-4">
-          <button className="text-slate-400 hover:text-slate-600">
-            <Bell size={20} />
-          </button>
-          <button className="text-slate-400 hover:text-slate-600">
-            <User size={20} />
-          </button>
+        <header className="h-16 border-b border-slate-200 flex items-center justify-between px-4 sm:px-6 bg-white sticky top-0 z-30 shadow-2xs">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setMobileMenuOpen(true)}
+              className="p-2 text-slate-600 hover:text-slate-900 md:hidden rounded-lg hover:bg-slate-100"
+              aria-label="Open navigation"
+            >
+              <Menu size={20} />
+            </button>
+            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider hidden sm:inline-block">
+              UCLM Academic Governance
+            </span>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <NotificationBell />
+            <Link
+              to="/dean/profile"
+              className="flex items-center gap-2 p-1.5 rounded-lg hover:bg-slate-100 transition-colors"
+              title="Dean Profile"
+            >
+              <div className="h-8 w-8 rounded-full bg-blue-100 text-[#1e3a8a] flex items-center justify-center font-bold text-xs">
+                {initials}
+              </div>
+              <span className="text-xs font-bold text-slate-700 hidden sm:inline-block">
+                {user?.name?.split(' ')[0] || 'Dean'}
+              </span>
+            </Link>
+          </div>
         </header>
 
         {/* Page Content */}
-        <div className="flex-1 overflow-auto bg-[#f5f6fa] p-6 lg:p-8">
-          <div className="max-w-5xl mx-auto">
-            <Outlet />
+        <div className="flex-1 overflow-auto bg-[#f8fafc] p-4 sm:p-6 lg:p-8">
+          <div className="max-w-7xl mx-auto">
+            {children || <Outlet />}
           </div>
         </div>
       </main>

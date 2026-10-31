@@ -1,151 +1,220 @@
-import { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { useState, useEffect, useCallback } from 'react';
+import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { FolderOpen, Hourglass, CheckCircle2, Clock } from 'lucide-react';
+import { 
+  FolderOpen, 
+  Hourglass, 
+  CheckCircle2, 
+  RotateCcw, 
+  RefreshCw,
+  PlusSquare,
+  ArrowRight
+} from 'lucide-react';
 import api from '../api';
+import PageHeader from '../components/PageHeader';
+import StatCard from '../components/StatCard';
+import StatusBadge from '../components/StatusBadge';
+import AiCategoryBadge from '../components/AiCategoryBadge';
+import EmptyState from '../components/EmptyState';
+import LoadingSpinner from '../components/LoadingSpinner';
 
 const StudentDashboard = () => {
   const { user } = useAuth();
+  const location = useLocation();
   const [concerns, setConcerns] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
-  useEffect(() => {
-    const fetchConcerns = async () => {
-      try {
-        const res = await api.get('/concerns');
-        setConcerns(res.data.concerns);
-      } catch (err) {
-        console.error(err);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchConcerns();
+  const fetchConcerns = useCallback(async (isManualRefresh = false) => {
+    if (isManualRefresh) setRefreshing(true);
+    try {
+      const res = await api.get(`/concerns?_t=${Date.now()}`);
+      setConcerns(res.data.concerns || []);
+    } catch (err) {
+      console.error('Failed to load concerns', err);
+    } finally {
+      setLoading(false);
+      if (isManualRefresh) setRefreshing(false);
+    }
   }, []);
 
+  useEffect(() => {
+    fetchConcerns();
+  }, [fetchConcerns, location.key]);
+
   const totalConcerns = concerns.length;
-  const pendingConcerns = concerns.filter(c => ['submitted', 'in_progress'].includes(c.status)).length;
-  const resolvedConcerns = concerns.filter(c => c.status === 'resolved').length;
-  
-  // Sort by created_at desc
-  const recentConcerns = [...concerns].sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 3);
+  const resolvedConcerns = concerns.filter(c => c.status === 'resolved' || c.status === 'closed').length;
+  const pendingConcerns = concerns.filter(c => 
+    ['pending', 'in_progress', 'escalated', 'approved', 'returned'].includes(c.status)
+  ).length;
 
-  const getStatusBadge = (status) => {
-    switch (status) {
-      case 'submitted': return <span className="px-2.5 py-1 bg-slate-100 text-slate-600 rounded-full text-xs font-medium">Pending Review</span>;
-      case 'in_progress': return <span className="px-2.5 py-1 bg-amber-50 text-amber-600 rounded-full text-xs font-medium border border-amber-200">Action Required</span>;
-      case 'resolved': return <span className="px-2.5 py-1 bg-slate-100 text-slate-600 rounded-full text-xs font-medium">Resolved</span>;
-      default: return <span className="px-2.5 py-1 bg-slate-100 text-slate-600 rounded-full text-xs font-medium">{status}</span>;
-    }
-  };
-
-  const getStatusIcon = (status) => {
-    switch (status) {
-      case 'submitted': return <Clock size={16} className="text-amber-600" />;
-      case 'in_progress': return <Hourglass size={16} className="text-amber-600" />;
-      case 'resolved': return <CheckCircle2 size={16} className="text-blue-600" />;
-      default: return <Clock size={16} className="text-slate-600" />;
-    }
-  };
-
-  const getStatusIconBg = (status) => {
-    switch (status) {
-      case 'resolved': return 'bg-blue-50';
-      default: return 'bg-amber-50';
-    }
-  };
+  const recentConcerns = [...concerns]
+    .sort((a, b) => {
+      const dateA = new Date(a.last_updated || a.submitted_at || a.created_at || 0);
+      const dateB = new Date(b.last_updated || b.submitted_at || b.created_at || 0);
+      return dateB - dateA;
+    })
+    .slice(0, 5);
 
   const formatDate = (dateString) => {
+    if (!dateString) return '—';
     const date = new Date(dateString);
+    if (isNaN(date.getTime())) return '—';
     const now = new Date();
     const diffTime = Math.abs(now - date);
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24)); 
     
-    if (diffDays === 0) return 'Submitted today';
-    if (diffDays === 1) return 'Submitted yesterday';
-    if (diffDays <= 7) return `Submitted ${diffDays} days ago`;
+    if (diffDays === 0) return 'Today';
+    if (diffDays === 1) return 'Yesterday';
+    if (diffDays <= 7) return `${diffDays} days ago`;
     
-    return `Submitted on ${date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   };
 
-  if (loading) return <div className="text-slate-500">Loading dashboard...</div>;
+  if (loading) {
+    return <LoadingSpinner message="Loading your student dashboard..." fullPage />;
+  }
+
+  const headerActions = (
+    <>
+      <button
+        onClick={() => fetchConcerns(true)}
+        disabled={refreshing}
+        className="btn-secondary text-xs py-2 px-3"
+        title="Refresh dashboard data"
+      >
+        <RefreshCw size={13} className={`mr-1.5 ${refreshing ? 'animate-spin text-blue-600' : 'text-slate-500'}`} />
+        <span>{refreshing ? 'Refreshing...' : 'Refresh'}</span>
+      </button>
+      <Link
+        to="/student/submit"
+        className="btn-primary text-xs py-2 px-3.5"
+      >
+        <PlusSquare size={14} className="mr-1.5" />
+        New Concern
+      </Link>
+    </>
+  );
 
   return (
-    <div>
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-slate-900 tracking-tight">Welcome, {user?.name}</h1>
-        <p className="text-slate-600 mt-2 text-sm max-w-2xl leading-relaxed">
-          Here is a summary of your recent support requests and concerns. Keep track of your academic and administrative inquiries here.
-        </p>
+    <div className="space-y-6 sm:space-y-8">
+      {/* Page Header */}
+      <PageHeader
+        category="Student Portal"
+        title={`Welcome, ${user?.name || 'Student'}`}
+        subtitle="Track your academic inquiries, administrative support tickets, and department resolutions in real time."
+        actions={headerActions}
+      />
+
+      {/* KPI Stat Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
+        <StatCard
+          title="Total Concerns"
+          value={totalConcerns}
+          icon={FolderOpen}
+          subtitle="All submitted support requests"
+          iconBg="bg-blue-50 text-[#1e3a8a] border-blue-100"
+        />
+        <StatCard
+          title="Pending / In Progress"
+          value={pendingConcerns}
+          icon={Hourglass}
+          badge={pendingConcerns > 0 ? `${pendingConcerns} Active` : undefined}
+          subtitle="Awaiting review or currently investigated"
+          iconBg="bg-amber-50 text-amber-700 border-amber-100"
+        />
+        <StatCard
+          title="Resolved Concerns"
+          value={resolvedConcerns}
+          icon={CheckCircle2}
+          subtitle="Successfully addressed and closed"
+          iconBg="bg-emerald-50 text-emerald-700 border-emerald-100"
+        />
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
-        <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm relative overflow-hidden">
-          <div className="bg-blue-50 h-10 w-10 rounded-lg flex items-center justify-center mb-10">
-            <FolderOpen size={20} className="text-[#1e3a8a]" />
+      {/* Recent Activity Section */}
+      <div className="card">
+        <div className="px-5 sm:px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+          <div>
+            <h2 className="text-base font-bold text-slate-900">Recent Activity</h2>
+            <p className="text-xs text-slate-500 mt-0.5">Your most recent submitted concerns and progress updates</p>
           </div>
-          <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Total Concerns Submitted</p>
-          <h3 className="text-3xl font-bold text-slate-900">{totalConcerns}</h3>
-        </div>
-
-        <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm relative overflow-hidden">
-          <div className="flex justify-between items-start mb-10">
-            <div className="bg-amber-50 h-10 w-10 rounded-lg flex items-center justify-center border border-amber-100">
-              <Hourglass size={20} className="text-amber-700" />
-            </div>
-            {pendingConcerns > 0 && (
-              <span className="px-2 py-1 bg-amber-50 text-amber-700 text-[10px] font-bold uppercase tracking-wider rounded-md border border-amber-100">
-                Action Required
-              </span>
-            )}
-          </div>
-          <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Pending Concerns</p>
-          <h3 className="text-3xl font-bold text-slate-900">{pendingConcerns}</h3>
-        </div>
-
-        <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm relative overflow-hidden">
-          <div className="bg-blue-50 h-10 w-10 rounded-lg flex items-center justify-center mb-10 border border-blue-100">
-            <CheckCircle2 size={20} className="text-blue-700" />
-          </div>
-          <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Resolved Concerns</p>
-          <h3 className="text-3xl font-bold text-slate-900">{resolvedConcerns}</h3>
-          
-          <div className="absolute -right-4 -bottom-4 w-24 h-24 bg-blue-50 rounded-full blur-2xl opacity-70"></div>
-        </div>
-      </div>
-
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm">
-        <div className="px-6 py-5 border-b border-slate-100 flex justify-between items-center">
-          <h2 className="text-lg font-bold text-slate-900">Recent Activity</h2>
-          <Link to="/student/concerns" className="text-sm font-bold text-[#1e3a8a] hover:text-blue-800">View All</Link>
+          <Link
+            to="/student/concerns"
+            className="text-xs font-bold text-blue-600 hover:text-blue-800 transition-colors inline-flex items-center gap-1"
+          >
+            <span>View All ({totalConcerns})</span>
+            <ArrowRight size={13} />
+          </Link>
         </div>
         
         <div className="divide-y divide-slate-100">
           {recentConcerns.length === 0 ? (
-            <div className="px-6 py-8 text-center text-slate-500 text-sm">
-              No recent activity.
-            </div>
+            <EmptyState
+              icon={FolderOpen}
+              title="No concerns submitted yet"
+              description="You have not submitted any concerns. If you need assistance with academic or administrative matters, submit a concern using the button below."
+              action={
+                <Link to="/student/submit" className="btn-primary text-xs">
+                  <PlusSquare size={14} className="mr-1.5" />
+                  Submit Your First Concern
+                </Link>
+              }
+              className="border-0 shadow-none py-10"
+            />
           ) : (
-            recentConcerns.map(concern => (
-              <div key={concern.concern_id} className="p-6 flex items-start justify-between hover:bg-slate-50 transition-colors">
-                <div className="flex gap-4">
-                  <div className={`mt-1 h-8 w-8 rounded-full flex items-center justify-center flex-shrink-0 ${getStatusIconBg(concern.status)}`}>
-                    {getStatusIcon(concern.status)}
-                  </div>
-                  <div>
-                    <h4 className="text-sm font-bold text-slate-900">{concern.title}</h4>
-                    <p className="text-xs text-slate-500 mt-1 flex items-center gap-2">
-                      {formatDate(concern.created_at)} 
-                      <span className="w-1 h-1 bg-slate-300 rounded-full"></span> 
-                      {concern.department ? concern.department.name : concern.academic_unit?.name}
+            recentConcerns.map(concern => {
+              const departmentLabel = concern.department?.name 
+                || concern.academic_unit?.name 
+                || (concern.workflow_type === 'academic' ? 'College of Computer Studies' : 'Department');
+              
+              return (
+                <Link
+                  key={concern.concern_id}
+                  to={`/student/concerns/${concern.concern_id}`}
+                  className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-4 hover:bg-slate-50/80 transition-colors group"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2 mb-1">
+                      <span className="text-xs font-mono font-bold text-slate-400">
+                        #REQ-{concern.concern_id.toString().padStart(4, '0')}
+                      </span>
+                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                        concern.workflow_type === 'academic' 
+                          ? 'bg-blue-50 text-blue-700 border border-blue-200' 
+                          : 'bg-indigo-50 text-indigo-700 border border-indigo-200'
+                      }`}>
+                        {concern.workflow_type === 'academic' ? 'Academic' : 'Non-Academic'}
+                      </span>
+                      {concern.issue_category && (
+                        <AiCategoryBadge
+                          category={concern.issue_category}
+                          subcategory={concern.issue_subcategory}
+                          size="xs"
+                        />
+                      )}
+                    </div>
+                    <h3 className="text-sm sm:text-base font-bold text-slate-900 group-hover:text-blue-600 transition-colors truncate">
+                      {concern.title}
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-1 flex flex-wrap items-center gap-2">
+                      <span>Submitted: {formatDate(concern.submitted_at || concern.created_at)}</span>
+                      <span className="w-1 h-1 bg-slate-300 rounded-full"></span>
+                      <span className="truncate max-w-[220px] sm:max-w-xs font-medium text-slate-700">{departmentLabel}</span>
+                      {concern.last_updated && concern.last_updated !== concern.submitted_at && (
+                        <>
+                          <span className="w-1 h-1 bg-slate-300 rounded-full"></span>
+                          <span className="text-slate-400">Updated {formatDate(concern.last_updated)}</span>
+                        </>
+                      )}
                     </p>
                   </div>
-                </div>
-                <div>
-                  {getStatusBadge(concern.status)}
-                </div>
-              </div>
-            ))
+                  <div className="self-start sm:self-center shrink-0">
+                    <StatusBadge status={concern.status} />
+                  </div>
+                </Link>
+              );
+            })
           )}
         </div>
       </div>

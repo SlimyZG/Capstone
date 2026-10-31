@@ -1,7 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Plus, Search, Eye } from 'lucide-react';
+import { Plus, Search, Eye, Filter, FolderOpen } from 'lucide-react';
 import api from '../api';
+import PageHeader from '../components/PageHeader';
+import StatusBadge from '../components/StatusBadge';
+import AiCategoryBadge from '../components/AiCategoryBadge';
+import EmptyState from '../components/EmptyState';
+import PaginationControls from '../components/PaginationControls';
 
 const StudentConcernsList = () => {
   const [concerns, setConcerns] = useState([]);
@@ -9,6 +14,8 @@ const StudentConcernsList = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [departmentFilter, setDepartmentFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const pageSize = 10;
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -18,7 +25,7 @@ const StudentConcernsList = () => {
   const fetchConcerns = async () => {
     try {
       const res = await api.get('/concerns');
-      setConcerns(res.data.concerns);
+      setConcerns(res.data.concerns || []);
     } catch (err) {
       console.error(err);
     } finally {
@@ -26,113 +33,179 @@ const StudentConcernsList = () => {
     }
   };
 
-  const getStatusBadge = (status) => {
-    switch (status) {
-      case 'submitted': return <span className="px-2 py-1 bg-slate-100 text-slate-600 rounded-full text-[10px] font-bold uppercase tracking-wider flex items-center w-max"><span className="w-1.5 h-1.5 rounded-full bg-slate-400 mr-1.5"></span> Submitted</span>;
-      case 'in_progress': return <span className="px-2 py-1 bg-amber-50 text-amber-700 rounded-full text-[10px] font-bold uppercase tracking-wider flex items-center w-max"><span className="w-1.5 h-1.5 rounded-full bg-amber-500 mr-1.5"></span> In Progress</span>;
-      case 'resolved': return <span className="px-2 py-1 bg-emerald-50 text-emerald-700 rounded-full text-[10px] font-bold uppercase tracking-wider flex items-center w-max"><span className="w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1.5"></span> Resolved</span>;
-      default: return <span className="px-2 py-1 bg-slate-100 text-slate-600 rounded-full text-[10px] font-bold uppercase tracking-wider flex items-center w-max"><span className="w-1.5 h-1.5 rounded-full bg-slate-400 mr-1.5"></span> {status}</span>;
-    }
-  };
-
   const formatDate = (dateString) => {
+    if (!dateString) return '—';
     const date = new Date(dateString);
+    if (isNaN(date.getTime())) return '—';
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   };
 
-  const filteredConcerns = concerns.filter(c => {
-    const matchSearch = c.concern_id.toString().toLowerCase().includes(searchTerm.toLowerCase()) || 
-                        c.title.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchDept = departmentFilter ? (c.department?.name === departmentFilter || c.academic_unit?.name === departmentFilter) : true;
-    const matchStatus = statusFilter ? c.status === statusFilter : true;
-    return matchSearch && matchDept && matchStatus;
-  });
+  const filteredConcerns = useMemo(() => {
+    return concerns.filter(c => {
+      const matchSearch = c.concern_id.toString().toLowerCase().includes(searchTerm.toLowerCase()) || 
+                          c.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                          (c.description || '').toLowerCase().includes(searchTerm.toLowerCase());
+      const matchDept = departmentFilter ? (c.department?.name === departmentFilter || c.academic_unit?.name === departmentFilter) : true;
+      const matchStatus = statusFilter ? c.status === statusFilter : true;
+      return matchSearch && matchDept && matchStatus;
+    });
+  }, [concerns, searchTerm, departmentFilter, statusFilter]);
+
+  const totalPages = Math.ceil(filteredConcerns.length / pageSize);
+  const paginatedConcerns = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredConcerns.slice(start, start + pageSize);
+  }, [filteredConcerns, currentPage, pageSize]);
 
   const departments = [...new Set(concerns.map(c => c.department?.name || c.academic_unit?.name))].filter(Boolean);
 
-  return (
-    <div>
-      <div className="flex justify-between items-end mb-6">
-        <div>
-          <h1 className="text-3xl font-bold text-slate-900 tracking-tight">My Concerns</h1>
-          <p className="text-slate-600 mt-1 text-sm">Track and manage your submitted requests and issues.</p>
-        </div>
-        <Link to="/student/submit" className="bg-[#1e3a8a] hover:bg-blue-800 text-white font-semibold text-sm px-4 py-2 rounded-md transition-colors flex items-center shadow-sm">
-          <Plus size={16} className="mr-2" /> New Concern
-        </Link>
-      </div>
+  const headerActions = (
+    <Link to="/student/submit" className="btn-dark text-xs py-2 px-3.5">
+      <Plus size={15} className="mr-1.5" />
+      <span>New Concern</span>
+    </Link>
+  );
 
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-        {/* Filters */}
-        <div className="p-4 border-b border-slate-200 flex flex-col sm:flex-row gap-4 bg-slate-50/50">
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        category="Student Portal"
+        title="My Concerns"
+        subtitle="Review, monitor, and follow up on all your submitted academic and administrative concerns."
+        breadcrumbs={[
+          { label: 'Dashboard', path: '/student' },
+          { label: 'My Concerns' }
+        ]}
+        actions={headerActions}
+      />
+
+      <div className="card overflow-hidden">
+        {/* Search & Filters */}
+        <div className="p-4 sm:p-5 border-b border-slate-200 flex flex-col sm:flex-row gap-3 bg-slate-50/50">
           <div className="relative flex-1">
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input 
               type="text" 
-              placeholder="Search by ID or Title..." 
-              className="w-full pl-9 pr-4 py-2 bg-white border border-slate-200 rounded-md text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+              placeholder="Search by Concern ID, Title, or Keywords..." 
+              className="input-field pl-9"
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              onChange={(e) => {
+                setSearchTerm(e.target.value);
+                setCurrentPage(1);
+              }}
             />
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap sm:flex-nowrap gap-2.5">
             <select 
-              className="px-3 py-2 bg-white border border-slate-200 rounded-md text-sm text-slate-700 outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+              className="input-field text-xs sm:w-auto"
               value={departmentFilter}
-              onChange={(e) => setDepartmentFilter(e.target.value)}
+              onChange={(e) => {
+                setDepartmentFilter(e.target.value);
+                setCurrentPage(1);
+              }}
             >
               <option value="">All Departments</option>
               {departments.map(d => <option key={d} value={d}>{d}</option>)}
             </select>
             <select 
-              className="px-3 py-2 bg-white border border-slate-200 rounded-md text-sm text-slate-700 outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+              className="input-field text-xs sm:w-auto"
               value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
+              onChange={(e) => {
+                setStatusFilter(e.target.value);
+                setCurrentPage(1);
+              }}
             >
               <option value="">All Statuses</option>
-              <option value="submitted">Submitted</option>
+              <option value="pending">Pending</option>
               <option value="in_progress">In Progress</option>
+              <option value="escalated">Escalated</option>
               <option value="resolved">Resolved</option>
+              <option value="withdrawn">Withdrawn</option>
             </select>
           </div>
         </div>
 
-        {/* Table */}
+        {/* Concerns Table */}
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm text-slate-600">
-            <thead className="text-xs uppercase bg-slate-50 text-slate-500 font-semibold border-b border-slate-200">
+            <thead className="text-[11px] uppercase bg-slate-50 text-slate-500 font-bold tracking-wider border-b border-slate-200">
               <tr>
-                <th className="px-6 py-4">Concern ID</th>
-                <th className="px-6 py-4">Title</th>
-                <th className="px-6 py-4">Department</th>
-                <th className="px-6 py-4">Status</th>
-                <th className="px-6 py-4">Date Submitted</th>
-                <th className="px-6 py-4 text-center">Actions</th>
+                <th className="px-5 py-3.5">Concern ID</th>
+                <th className="px-5 py-3.5">Title & Category</th>
+                <th className="px-5 py-3.5">Assigned Target</th>
+                <th className="px-5 py-3.5">Status</th>
+                <th className="px-5 py-3.5">Date Submitted</th>
+                <th className="px-5 py-3.5 text-center">Action</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="divide-y divide-slate-100">
               {loading ? (
-                <tr><td colSpan="6" className="px-6 py-8 text-center text-slate-500">Loading concerns...</td></tr>
+                <tr>
+                  <td colSpan="6" className="px-6 py-12 text-center text-slate-400 text-sm">
+                    Loading your concerns...
+                  </td>
+                </tr>
               ) : filteredConcerns.length === 0 ? (
-                <tr><td colSpan="6" className="px-6 py-8 text-center text-slate-500">No concerns found.</td></tr>
+                <tr>
+                  <td colSpan="6" className="p-0">
+                    <EmptyState
+                      icon={FolderOpen}
+                      title="No matching concerns found"
+                      description={searchTerm || departmentFilter || statusFilter ? "Try adjusting your search query or filters to find your submitted tickets." : "You have not submitted any concerns yet."}
+                      action={
+                        <Link to="/student/submit" className="btn-primary text-xs">
+                          <Plus size={14} className="mr-1.5" />
+                          Submit New Concern
+                        </Link>
+                      }
+                      className="border-0 shadow-none py-12"
+                    />
+                  </td>
+                </tr>
               ) : (
-                filteredConcerns.map((concern) => (
-                  <tr key={concern.concern_id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
-                    <td className="px-6 py-4 font-bold text-slate-700 whitespace-nowrap">#{concern.concern_id}</td>
-                    <td className="px-6 py-4">
-                      <div className="font-bold text-slate-900">{concern.title}</div>
-                      <div className="text-xs text-slate-500 mt-0.5 truncate max-w-[250px]">{concern.description}</div>
+                paginatedConcerns.map((concern) => (
+                  <tr 
+                    key={concern.concern_id} 
+                    onClick={() => navigate(`/student/concerns/${concern.concern_id}`)}
+                    className="hover:bg-slate-50/80 transition-colors cursor-pointer group"
+                  >
+                    <td className="px-5 py-4 font-mono font-bold text-slate-600 whitespace-nowrap text-xs">
+                      #REQ-{concern.concern_id.toString().padStart(4, '0')}
                     </td>
-                    <td className="px-6 py-4">{concern.department ? concern.department.name : concern.academic_unit?.name}</td>
-                    <td className="px-6 py-4">{getStatusBadge(concern.status)}</td>
-                    <td className="px-6 py-4">{formatDate(concern.created_at)}</td>
-                    <td className="px-6 py-4 text-center">
+                    <td className="px-5 py-4 max-w-sm">
+                      <div className="font-bold text-slate-900 group-hover:text-blue-600 transition-colors truncate">
+                        {concern.title}
+                      </div>
+                      <div className="mt-1 flex items-center gap-2 flex-wrap">
+                        {concern.issue_category && (
+                          <AiCategoryBadge
+                            category={concern.issue_category}
+                            subcategory={concern.issue_subcategory}
+                            size="xs"
+                          />
+                        )}
+                        <span className="text-[11px] text-slate-400 truncate max-w-[200px]">
+                          {concern.description}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="px-5 py-4 text-xs font-medium text-slate-700 whitespace-nowrap">
+                      {concern.department ? concern.department.name : (concern.academic_unit?.name || 'Computer Studies')}
+                    </td>
+                    <td className="px-5 py-4 whitespace-nowrap">
+                      <StatusBadge status={concern.status} />
+                    </td>
+                    <td className="px-5 py-4 whitespace-nowrap text-xs text-slate-500">
+                      {formatDate(concern.submitted_at || concern.created_at)}
+                    </td>
+                    <td className="px-5 py-4 text-center whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                       <button 
                         onClick={() => navigate(`/student/concerns/${concern.concern_id}`)}
-                        className="text-blue-600 hover:text-blue-800 p-1.5 hover:bg-blue-50 rounded-md transition-colors inline-flex"
-                        title="View Details"
+                        className="btn-secondary py-1.5 px-2.5 text-xs inline-flex items-center gap-1 text-slate-700 hover:text-blue-600"
+                        title="View Concern Details"
                       >
-                        <Eye size={18} />
+                        <Eye size={14} />
+                        <span>View</span>
                       </button>
                     </td>
                   </tr>
@@ -142,17 +215,14 @@ const StudentConcernsList = () => {
           </table>
         </div>
 
-        {/* Pagination (Visual only for now based on mockup) */}
-        {!loading && filteredConcerns.length > 0 && (
-          <div className="px-6 py-4 border-t border-slate-200 flex items-center justify-between bg-white text-sm">
-            <span className="text-slate-500">Showing 1 to {filteredConcerns.length} of {filteredConcerns.length} entries</span>
-            <div className="flex space-x-1">
-              <button className="px-3 py-1.5 border border-slate-200 rounded-md text-slate-400 cursor-not-allowed">Previous</button>
-              <button className="px-3 py-1.5 border border-[#1e3a8a] bg-[#1e3a8a] text-white font-medium rounded-md">1</button>
-              <button className="px-3 py-1.5 border border-slate-200 rounded-md text-slate-600 hover:bg-slate-50">Next</button>
-            </div>
-          </div>
-        )}
+        {/* Pagination */}
+        <PaginationControls
+          currentPage={currentPage}
+          totalPages={totalPages}
+          totalItems={filteredConcerns.length}
+          pageSize={pageSize}
+          onPageChange={setCurrentPage}
+        />
       </div>
     </div>
   );

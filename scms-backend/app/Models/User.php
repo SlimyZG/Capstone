@@ -92,4 +92,32 @@ class User extends Authenticatable
     {
         return $this->role === $role;
     }
+
+    /**
+     * Role helper checks.
+     */
+    public function isSao(): bool
+    {
+        return $this->role === 'sao';
+    }
+
+    public function isAdmin(): bool
+    {
+        return $this->role === 'admin';
+    }
+
+    public function isDean(): bool
+    {
+        return $this->role === 'dean';
+    }
+
+    public function isDeptStaff(): bool
+    {
+        return $this->role === 'dept_staff';
+    }
+
+    public function isStudent(): bool
+    {
+        return $this->role === 'student';
+    }
 }

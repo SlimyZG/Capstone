@@ -1,0 +1,22 @@
+# Database backups and exports
+*.sql
+*.sql.gz
+*.dump
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+vendor/
+
+# Build output
+dist/
+build/
+
+# Logs and temporary files
+*.log
+.DS_Store
+Thumbs.db

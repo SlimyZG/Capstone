@@ -1,8 +1,15 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { Paperclip, Send, CheckCircle2, ArrowUpCircle, ArrowRightLeft, ChevronLeft, Sparkles, User } from 'lucide-react';
+import { Paperclip, Send, CheckCircle2, ArrowUpCircle, ArrowRightLeft, ChevronLeft, Sparkles, User, AlertCircle } from 'lucide-react';
 import api from '../api';
+import StatusBadge from '../components/StatusBadge';
+import PriorityBadge from '../components/PriorityBadge';
+import AiCategoryBadge from '../components/AiCategoryBadge';
+import AiSummaryCard from '../components/AiSummaryCard';
+import EmptyState from '../components/EmptyState';
+import SlaStatusBadge from '../components/SlaStatusBadge';
+import SlaTrackingCard from '../components/SlaTrackingCard';
 
 const DeptStaffConcernDetails = () => {
   const { id } = useParams();
@@ -17,17 +24,36 @@ const DeptStaffConcernDetails = () => {
 
   useEffect(() => { fetchData(); }, [id]);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  useEffect(() => {
+    if (window.location.hash === '#messages') {
+      const el = document.getElementById('messages');
+      if (el) {
+        setTimeout(() => {
+          el.scrollIntoView({ behavior: 'smooth' });
+        }, 200);
+      }
+    }
+  }, [loading]);
 
   const fetchData = async () => {
     try {
-      const msgRes = await api.get(`/dept-staff/concerns/${id}/messages`);
-      // Get concern details from queue list — no single concern endpoint for staff, so filter from queue
-      const queueRes = await api.get('/dept-staff/queue');
-      const found = queueRes.data.concerns.find(c => c.concern_id.toString() === id.toString());
-      setConcern(found || null);
-      setMessages(msgRes.data.messages || []);
+      const res = await api.get(`/dept-staff/concerns/${id}`);
+      setConcern(res.data.concern);
+      setMessages(res.data.concern.messages || []);
     } catch (err) {
-      console.error(err);
+      console.warn('Direct fetch failed, trying queue fallback:', err);
+      try {
+        const queueRes = await api.get('/dept-staff/queue');
+        const found = queueRes.data.concerns.find(c => c.concern_id.toString() === id.toString());
+        setConcern(found || null);
+        if (found) {
+          const msgRes = await api.get(`/dept-staff/concerns/${id}/messages`);
+          setMessages(msgRes.data.messages || []);
+        }
+      } catch (fallbackErr) {
+        console.error(fallbackErr);
+        setConcern(null);
+      }
     } finally {
       setLoading(false);
     }
@@ -54,8 +80,17 @@ const DeptStaffConcernDetails = () => {
       } else if (action === 'in_progress') {
         await api.post(`/dept-staff/concerns/${id}/status`, { status: 'in_progress' });
       } else if (action === 'escalate') {
-        if (!window.confirm('Escalate this concern to the Dean?')) { setActionLoading(''); return; }
+        const confirmMsg = isAcademic 
+          ? 'Forward this academic concern to the Dean for review?' 
+          : 'Escalate this concern to the Dean?';
+        if (!window.confirm(confirmMsg)) { setActionLoading(''); return; }
         await api.post(`/dept-staff/concerns/${id}/escalate`);
+      } else if (action === 'forward_cad') {
+        if (!window.confirm('Forward this non-academic concern to CAD (Campus Administration) for approval?')) { 
+          setActionLoading(''); 
+          return; 
+        }
+        await api.post(`/dept-staff/concerns/${id}/forward-cad`);
       }
       fetchData();
     } catch (err) {
@@ -65,27 +100,11 @@ const DeptStaffConcernDetails = () => {
     }
   };
 
-  const getPriorityBadge = (priority) => {
-    switch ((priority || '').toLowerCase()) {
-      case 'high': return <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-red-100 text-red-700 rounded-full text-xs font-bold border border-red-200"><span className="w-2 h-2 rounded-full bg-red-500"></span>High Priority</span>;
-      case 'medium': return <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-100 text-amber-700 rounded-full text-xs font-bold border border-amber-200"><span className="w-2 h-2 rounded-full bg-amber-500"></span>Medium Priority</span>;
-      default: return <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-slate-100 text-slate-600 rounded-full text-xs font-bold">Low Priority</span>;
-    }
-  };
-
-  const getStatusBadge = (status) => {
-    switch (status) {
-      case 'pending': return <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-amber-50 text-amber-600 rounded-full text-xs font-bold border border-amber-200">⏱ Pending</span>;
-      case 'in_progress': return <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-50 text-blue-600 rounded-full text-xs font-bold border border-blue-200">🔄 In Progress</span>;
-      case 'resolved': return <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-700 rounded-full text-xs font-bold border border-emerald-200">✅ Resolved</span>;
-      case 'escalated': return <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-purple-50 text-purple-600 rounded-full text-xs font-bold border border-purple-200">⬆ Escalated</span>;
-      default: return <span className="px-3 py-1 bg-slate-100 text-slate-600 rounded-full text-xs font-bold">{status}</span>;
-    }
-  };
-
   const formatDate = (d) => {
     if (!d) return '—';
-    return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const date = new Date(d);
+    if (isNaN(date.getTime())) return '—';
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   };
 
   const getInitials = (name) => {
@@ -93,163 +112,179 @@ const DeptStaffConcernDetails = () => {
     return name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2);
   };
 
-  if (loading) return <div className="text-slate-500 p-6">Loading concern details...</div>;
+  if (loading) {
+    return (
+      <div className="p-16 text-center text-slate-500 flex flex-col items-center justify-center gap-3">
+        <div className="w-8 h-8 border-3 border-blue-200 border-t-[#1e3a8a] rounded-full animate-spin"></div>
+        <p className="text-xs font-semibold">Loading concern details...</p>
+      </div>
+    );
+  }
   if (!concern) return (
-    <div className="text-center py-16">
-      <p className="text-slate-500 text-sm mb-4">Concern not found or not in your queue.</p>
-      <Link to="/dept-staff/concerns" className="text-[#1e3a8a] text-sm font-bold">← Back to Concerns</Link>
+    <div className="text-center py-16 card p-8 max-w-md mx-auto my-8">
+      <AlertCircle className="mx-auto h-12 w-12 text-slate-400 mb-3" />
+      <h3 className="text-base font-bold text-slate-800 mb-1">Concern Not Found</h3>
+      <p className="text-slate-500 text-sm mb-4">This concern could not be found or is not in your department queue.</p>
+      <Link to="/dept-staff/concerns" className="btn-dark text-xs">← Back to Concerns</Link>
     </div>
   );
 
   const studentName = concern.student?.name || 'Unknown Student';
   const studentId = concern.student?.student_id_number || '—';
   const departmentName = concern.department?.name || concern.academic_unit?.name || '—';
-  const canResolve = ['pending', 'in_progress', 'approved'].includes(concern.status);
-  const canMarkInProgress = concern.status === 'pending';
-  const canEscalate = ['pending', 'in_progress'].includes(concern.status);
+  const isAcademic = concern.workflow_type === 'academic' || concern.category === 'academic_units';
+  const canResolve = ['pending', 'in_progress', 'approved', 'returned'].includes(concern.status);
+  const canMarkInProgress = ['pending', 'returned'].includes(concern.status);
+  const canEscalate = ['pending', 'in_progress', 'returned'].includes(concern.status);
 
   return (
-    <div className="pb-12">
-      {/* Breadcrumb */}
-      <div className="flex items-center text-sm text-slate-500 mb-6">
-        <Link to="/dept-staff/concerns" className="hover:text-slate-900 flex items-center gap-1">
-          <ChevronLeft size={16} /> Concerns
+    <div className="pb-12 space-y-6">
+      {/* Breadcrumb & Navigation */}
+      <div className="flex items-center text-xs text-slate-500">
+        <Link to="/dept-staff/concerns" className="hover:text-blue-600 flex items-center gap-1 font-medium">
+          <ChevronLeft size={14} /> Concern Queue
         </Link>
         <span className="mx-2">›</span>
-        <span className="font-medium text-slate-700">Ticket #REQ-{concern.concern_id.toString().padStart(4, '0')}</span>
+        <span className="font-semibold text-slate-700">#REQ-{concern.concern_id.toString().padStart(4, '0')}</span>
       </div>
 
       {/* Header */}
-      <div className="mb-6">
-        <div className="flex flex-wrap gap-2 mb-3">
-          {getPriorityBadge(concern.priority)}
-          <span className="px-3 py-1 bg-slate-100 text-slate-600 rounded-full text-xs font-bold">ID: #REQ-{concern.concern_id.toString().padStart(4, '0')}</span>
-          {getStatusBadge(concern.status)}
+      <div className="card p-6 bg-white">
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <PriorityBadge priority={concern.priority} isOverridden={concern.is_priority_overridden} size="sm" />
+          <StatusBadge status={concern.status} size="sm" />
+          <SlaStatusBadge sla={concern.sla} status={concern.status} size="sm" showRemaining={true} />
+          {concern.issue_category && (
+            <AiCategoryBadge
+              category={concern.issue_category}
+              subcategory={concern.issue_subcategory}
+              confidence={concern.classification_confidence}
+              showConfidence={true}
+              size="sm"
+            />
+          )}
+          <span className="px-2.5 py-0.5 bg-slate-100 text-slate-600 rounded-full text-xs font-mono font-bold">
+            ID: #REQ-{concern.concern_id.toString().padStart(4, '0')}
+          </span>
         </div>
-        <h1 className="text-3xl font-bold text-slate-900 tracking-tight">{concern.title}</h1>
-        <p className="text-slate-500 text-sm mt-2">
-          Submitted by <span className="font-semibold text-slate-700">{studentName} (Student ID: {studentId})</span> • {formatDate(concern.submitted_at)}
+        <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 tracking-tight">{concern.title}</h1>
+        <p className="text-slate-500 text-xs sm:text-sm mt-2">
+          Submitted by <span className="font-semibold text-slate-700">{studentName} (ID: {studentId})</span> • {formatDate(concern.submitted_at || concern.created_at)}
         </p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left Column */}
+        {/* Left Column: Details, AI Summary, Messages */}
         <div className="lg:col-span-2 space-y-6">
 
-          {/* AI Summary */}
+          {/* AI Summary Card */}
           {concern.ai_summary && (
-            <div className="bg-blue-50 border border-blue-200 rounded-2xl p-5">
-              <div className="flex items-center gap-2 mb-3">
-                <div className="h-7 w-7 rounded-lg bg-blue-600 flex items-center justify-center flex-shrink-0">
-                  <Sparkles size={14} className="text-white" />
-                </div>
-                <span className="text-sm font-bold text-blue-800">AI Issue Summary</span>
-              </div>
-              <p className="text-sm text-blue-900 leading-relaxed">{concern.ai_summary}</p>
-            </div>
+            <AiSummaryCard summary={concern.ai_summary} />
           )}
 
-          {/* Original Request */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-            <div className="px-6 py-5 border-b border-slate-100 flex items-center gap-2">
-              <div className="text-slate-500">📄</div>
-              <h2 className="text-base font-bold text-slate-900">Original Request Details</h2>
+          {/* Original Request Details */}
+          <div className="card">
+            <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
+              <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wider">Student Description</h2>
+              <span className="text-xs text-slate-400 font-medium">
+                Track: {isAcademic ? 'Academic' : 'Operational'}
+              </span>
             </div>
             <div className="p-6">
-              <div className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed bg-slate-50 rounded-xl p-4 border border-slate-100 mb-4">
+              <div className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed bg-slate-50 rounded-xl p-4 border border-slate-100 mb-4 break-words">
                 {concern.description}
               </div>
               {concern.attachments && concern.attachments.length > 0 && (
                 <div>
-                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Attachments ({concern.attachments.length})</p>
+                  <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Attachments ({concern.attachments.length})</p>
                   <div className="flex flex-wrap gap-2">
-                    {concern.attachments.map((att, i) => (
-                      <a
-                        key={i}
-                        href={`http://localhost:8000/storage/${att.file_path || att}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-2 px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs text-slate-700 font-medium hover:bg-slate-50 transition-colors shadow-sm"
-                      >
-                        <Paperclip size={12} className="text-slate-400" />
-                        {att.file_name || `Attachment ${i + 1}`}
-                      </a>
-                    ))}
+                    {concern.attachments.map((att, i) => {
+                      const filePath = typeof att === 'string' ? att : (att?.file_path || att?.path || '');
+                      const fileName = typeof att === 'string' ? `Attachment ${i + 1}` : (att?.file_name || att?.name || `Attachment ${i + 1}`);
+                      if (!filePath) return null;
+                      const fullUrl = filePath.startsWith('http') ? filePath : `http://localhost:8000${filePath.startsWith('/') ? '' : '/'}${filePath}`;
+                      return (
+                        <a
+                          key={i}
+                          href={fullUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="btn-secondary py-1.5 px-3 text-xs inline-flex items-center gap-1.5 text-blue-600 hover:text-blue-800"
+                        >
+                          <Paperclip size={13} />
+                          <span>{fileName}</span>
+                        </a>
+                      );
+                    })}
                   </div>
                 </div>
               )}
             </div>
           </div>
 
-          {/* Communication Thread */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col h-[500px]">
-            <div className="px-6 py-5 border-b border-slate-100 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="text-slate-500">💬</span>
-                <h2 className="text-base font-bold text-slate-900">Communication Thread</h2>
+          {/* Workflow Routing & Follow-up Audit History */}
+          {Array.isArray(concern.routing_history) && concern.routing_history.length > 0 && (
+            <div className="card p-6">
+              <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wider mb-4">Routing &amp; Follow-up History</h2>
+              <div className="space-y-3">
+                {concern.routing_history.map((record, i) => (
+                  <div key={record.id || i} className="flex items-start gap-3 text-xs">
+                    <div className="w-2 h-2 rounded-full bg-[#1e3a8a] mt-1.5 shrink-0" />
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-bold text-slate-900 capitalize">
+                          {record.action?.replace(/_/g, ' ')}
+                        </span>
+                        <span className="text-slate-400 text-[11px]">
+                          {formatDate(record.created_at)}
+                        </span>
+                      </div>
+                      <p className="text-slate-600 mt-0.5">{record.notes || 'Action logged.'}</p>
+                      {(record.performer || record.performed_by_name || record.actor_name) && (
+                        <p className="text-[10px] text-slate-400 mt-0.5">
+                          By: {record.performer?.name || record.performed_by_name || record.actor_name}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                ))}
               </div>
-              <span className="text-xs text-slate-400 font-medium">Student {concern.status === 'resolved' ? 'offline' : 'online'}</span>
+            </div>
+          )}
+
+          {/* Communication Thread */}
+          <div id="messages" className="card flex flex-col h-[520px]">
+            <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
+              <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wider">Communication Activity</h2>
+              <span className="text-xs text-slate-500 font-medium">{messages.length} messages</span>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-5 space-y-4 bg-slate-50/50">
+            <div className="flex-1 overflow-y-auto p-5 space-y-4 bg-slate-50/30">
               {messages.length === 0 ? (
-                <div className="text-center text-slate-400 text-sm mt-10">No messages yet. Start the conversation.</div>
+                <EmptyState
+                  title="No messages yet"
+                  description="Use the input below to reply to the student or provide instructional guidance."
+                  className="border-0 shadow-none py-12"
+                />
               ) : (
                 messages.map((msg, idx) => {
-                  const isMine = msg.sender_id === user.id;
-                  const prevDate = idx > 0 ? new Date(messages[idx - 1].created_at).toDateString() : null;
-                  const currDate = new Date(msg.created_at).toDateString();
-                  const showDate = prevDate !== currDate;
-
+                  const isMine = msg.sender_id === user?.id;
                   return (
-                    <div key={msg.id}>
-                      {showDate && (
-                        <div className="flex justify-center my-4">
-                          <span className="px-3 py-1 bg-slate-200/50 text-slate-500 rounded-full text-[10px] font-medium uppercase tracking-wide">
-                            {new Date(msg.created_at).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
-                          </span>
+                    <div key={msg.id || idx} className={`flex ${isMine ? 'justify-end' : 'justify-start'}`}>
+                      <div className={`max-w-md ${isMine ? 'items-end' : 'items-start'} flex flex-col`}>
+                        <div className="flex items-center gap-1.5 text-[10px] text-slate-400 mb-1 px-1">
+                          <span className="font-bold text-slate-600">{isMine ? 'You (Staff)' : (msg.sender?.name || studentName)}</span>
+                          <span>•</span>
+                          <span>{new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                         </div>
-                      )}
-                      {msg.is_internal && (
-                        <div className="flex justify-center my-2">
-                          <span className="px-3 py-1 bg-slate-100 text-slate-400 rounded-full text-[10px] font-semibold uppercase tracking-widest">
-                            {msg.body}
-                          </span>
+                        <div className={`p-3.5 rounded-xl text-xs sm:text-sm leading-relaxed break-words ${
+                          isMine 
+                            ? 'bg-[#1e3a8a] text-white rounded-tr-xs shadow-2xs' 
+                            : 'bg-white border border-slate-200 text-slate-800 rounded-tl-xs shadow-2xs'
+                        }`}>
+                          {msg.body}
                         </div>
-                      )}
-                      {!msg.is_internal && (
-                        <div className={`flex ${isMine ? 'justify-end' : 'justify-start'} mb-3`}>
-                          {!isMine && (
-                            <div className="h-8 w-8 rounded-full bg-amber-100 text-amber-700 flex-shrink-0 flex items-center justify-center text-xs font-bold mr-3 mt-1">
-                              {getInitials(msg.sender?.name || studentName)}
-                            </div>
-                          )}
-                          <div className={`max-w-[72%] flex flex-col ${isMine ? 'items-end' : 'items-start'}`}>
-                            {!isMine && (
-                              <span className="text-xs text-slate-500 mb-1 ml-1 font-medium">
-                                {msg.sender?.name || studentName} {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                              </span>
-                            )}
-                            <div className={`p-3.5 rounded-2xl text-sm leading-relaxed ${
-                              isMine
-                                ? 'bg-[#1e3a8a] text-white rounded-tr-sm'
-                                : 'bg-white border border-slate-200 text-slate-800 rounded-tl-sm shadow-sm'
-                            }`}>
-                              {msg.body}
-                            </div>
-                            {isMine && (
-                              <span className="text-[10px] text-slate-400 mt-1 mr-1">
-                                {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                              </span>
-                            )}
-                          </div>
-                          {isMine && (
-                            <div className="h-8 w-8 rounded-full bg-blue-100 text-blue-700 flex-shrink-0 flex items-center justify-center text-xs font-bold ml-3 mt-1">
-                              {getInitials(user?.name)}
-                            </div>
-                          )}
-                        </div>
-                      )}
+                      </div>
                     </div>
                   );
                 })
@@ -258,116 +293,143 @@ const DeptStaffConcernDetails = () => {
             </div>
 
             <div className="p-4 bg-white border-t border-slate-200">
-              <form onSubmit={handleSendMessage} className="flex items-end gap-3">
-                <button type="button" className="p-2 text-slate-400 hover:text-slate-600 rounded-full transition-colors flex-shrink-0">
-                  <Paperclip size={20} />
-                </button>
-                <div className="flex-1 bg-slate-50 border border-slate-200 rounded-2xl focus-within:ring-2 focus-within:ring-blue-500/20 focus-within:border-blue-500 transition-all overflow-hidden">
-                  <textarea
-                    rows="1"
-                    className="w-full bg-transparent px-4 py-3 outline-none text-sm resize-none text-slate-900 placeholder:text-slate-400"
-                    placeholder={`Type your message to ${studentName.split(' ')[0]}...`}
-                    value={newMessage}
-                    onChange={e => setNewMessage(e.target.value)}
-                    onKeyDown={e => {
-                      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendMessage(e); }
-                    }}
-                  />
-                </div>
+              <form onSubmit={handleSendMessage} className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder="Type an official response or request more details..."
+                  className="input-field"
+                  value={newMessage}
+                  onChange={(e) => setNewMessage(e.target.value)}
+                />
                 <button
                   type="submit"
                   disabled={!newMessage.trim()}
-                  className="h-10 px-4 bg-[#1e3a8a] text-white rounded-full hover:bg-blue-900 disabled:opacity-50 transition-colors shadow-sm flex-shrink-0 flex items-center gap-1.5 text-sm font-semibold"
+                  className="btn-dark px-4 shrink-0"
                 >
-                  <Send size={15} /> Send
+                  <Send size={15} className="mr-1.5" />
+                  <span>Send</span>
                 </button>
               </form>
             </div>
           </div>
         </div>
 
-        {/* Right Column */}
+        {/* Right Column: Actions & Student Info */}
         <div className="space-y-6">
+          {/* Resolution Timeframe & Automatic Follow-up Card */}
+          <SlaTrackingCard concern={concern} />
+
           {/* Resolution Actions */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
-            <h2 className="text-base font-bold text-slate-900 mb-4">Resolution Actions</h2>
-            <div className="space-y-3">
+          <div className="card p-6">
+            <h2 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-4">Workflow Actions</h2>
+            <div className="space-y-2.5">
               {canResolve && (
                 <button
                   onClick={() => handleAction('resolve')}
                   disabled={!!actionLoading}
-                  className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-[#1e3a8a] hover:bg-[#152960] text-white text-sm font-bold rounded-xl transition-colors shadow-sm disabled:opacity-60"
+                  className="w-full btn-success py-2.5 text-xs flex items-center justify-center gap-1.5"
                 >
                   <CheckCircle2 size={16} />
-                  {actionLoading === 'resolve' ? 'Resolving...' : 'Resolve Request'}
+                  <span>{actionLoading === 'resolve' ? 'Resolving...' : 'Resolve Concern'}</span>
                 </button>
               )}
+
               {canMarkInProgress && (
                 <button
                   onClick={() => handleAction('in_progress')}
                   disabled={!!actionLoading}
-                  className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-white border-2 border-slate-200 hover:border-blue-300 hover:bg-blue-50 text-slate-700 text-sm font-bold rounded-xl transition-colors shadow-sm disabled:opacity-60"
+                  className="w-full btn-secondary py-2.5 text-xs flex items-center justify-center gap-1.5"
                 >
                   <ArrowUpCircle size={16} />
-                  {actionLoading === 'in_progress' ? 'Updating...' : 'Mark In Progress'}
+                  <span>{actionLoading === 'in_progress' ? 'Updating...' : 'Mark In Progress'}</span>
                 </button>
               )}
-              {canEscalate && (
+
+              {/* Academic Forward to Dean */}
+              {canEscalate && isAcademic && (
                 <button
                   onClick={() => handleAction('escalate')}
                   disabled={!!actionLoading}
-                  className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-white border-2 border-slate-200 hover:border-purple-300 hover:bg-purple-50 text-slate-700 text-sm font-bold rounded-xl transition-colors shadow-sm disabled:opacity-60"
+                  className="w-full btn-dark py-2.5 text-xs flex items-center justify-center gap-1.5"
                 >
-                  <ArrowRightLeft size={16} />
-                  {actionLoading === 'escalate' ? 'Escalating...' : 'Escalate to Dean'}
+                  <ArrowUpCircle size={16} />
+                  <span>{actionLoading === 'escalate' ? 'Forwarding...' : 'Forward to Dean (Review)'}</span>
                 </button>
               )}
+
+              {/* Non-Academic Forward to CAD */}
+              {canEscalate && !isAcademic && (
+                <button
+                  onClick={() => handleAction('forward_cad')}
+                  disabled={!!actionLoading}
+                  className="w-full btn-dark py-2.5 text-xs flex items-center justify-center gap-1.5"
+                >
+                  <ArrowUpCircle size={16} />
+                  <span>{actionLoading === 'forward_cad' ? 'Forwarding...' : 'Forward to CAD for Approval'}</span>
+                </button>
+              )}
+
               {concern.status === 'resolved' && (
-                <div className="text-center py-4 text-slate-400 text-sm flex flex-col items-center gap-2">
-                  <CheckCircle2 size={24} className="text-emerald-400" />
-                  This concern has been resolved.
+                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800 text-xs flex items-center gap-2">
+                  <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
+                  <span>This concern has been officially resolved.</span>
                 </div>
               )}
               {concern.status === 'escalated' && (
-                <div className="text-center py-4 text-slate-400 text-sm flex flex-col items-center gap-2">
-                  <ArrowUpCircle size={24} className="text-purple-400" />
-                  This concern has been escalated to the Dean.
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-blue-800 text-xs flex items-center gap-2">
+                  <ArrowUpCircle size={16} className="text-blue-600 shrink-0" />
+                  <span>Forwarded for higher administrative review.</span>
                 </div>
               )}
             </div>
           </div>
 
-          {/* Student Information */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
-            <h2 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4">Student Information</h2>
-            <div className="flex items-center gap-3 mb-5">
-              <div className="h-10 w-10 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center text-sm font-bold flex-shrink-0">
-                {getInitials(studentName)}
-              </div>
+          {/* Priority & Student Info Card */}
+          <div className="card p-6">
+            <h2 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-4">Metadata & Diagnostic</h2>
+            
+            <div className="space-y-4 text-xs">
               <div>
-                <p className="font-bold text-slate-900 text-sm">{studentName}</p>
-                <p className="text-xs text-slate-500">{studentId}@university.edu</p>
+                <p className="text-slate-400 font-semibold uppercase tracking-wider text-[10px] mb-1">Student Contact</p>
+                <div className="flex items-center gap-2.5">
+                  <div className="h-8 w-8 rounded-full bg-blue-100 text-[#1e3a8a] flex items-center justify-center font-bold text-xs shrink-0">
+                    {getInitials(studentName)}
+                  </div>
+                  <div>
+                    <p className="font-bold text-slate-900">{studentName}</p>
+                    <p className="text-slate-500">ID: {studentId}</p>
+                  </div>
+                </div>
               </div>
-            </div>
-            <div className="grid grid-cols-2 gap-4 text-xs">
-              <div>
-                <p className="text-slate-400 font-semibold uppercase tracking-wider mb-0.5">Department</p>
-                <p className="text-slate-800 font-semibold">{departmentName}</p>
+
+              <div className="pt-3 border-t border-slate-100">
+                <p className="text-slate-400 font-semibold uppercase tracking-wider text-[10px] mb-1">Assigned Department</p>
+                <p className="font-semibold text-slate-800">{departmentName}</p>
               </div>
-              <div>
-                <p className="text-slate-400 font-semibold uppercase tracking-wider mb-0.5">Student ID</p>
-                <p className="text-slate-800 font-semibold">{studentId}</p>
+
+              <div className="pt-3 border-t border-slate-100">
+                <p className="text-slate-400 font-semibold uppercase tracking-wider text-[10px] mb-1">Priority Level</p>
+                <PriorityBadge priority={concern.priority} isOverridden={concern.is_priority_overridden} size="xs" />
               </div>
-              <div>
-                <p className="text-slate-400 font-semibold uppercase tracking-wider mb-0.5">Category</p>
-                <p className="text-slate-800 font-semibold">{concern.category === 'academic_units' ? 'Academic' : 'Operational'}</p>
-              </div>
-              <div>
-                <p className="text-slate-400 font-semibold uppercase tracking-wider mb-0.5">Priority</p>
-                <p className={`font-bold ${(concern.priority || '').toLowerCase() === 'high' ? 'text-red-600' : (concern.priority || '').toLowerCase() === 'medium' ? 'text-amber-600' : 'text-slate-600'}`}>
-                  {concern.priority ? concern.priority.charAt(0).toUpperCase() + concern.priority.slice(1) : '—'}
-                </p>
-              </div>
+
+              {concern.ai_priority_explanation && (
+                <div className="pt-3 border-t border-slate-100">
+                  <p className="text-slate-400 font-semibold uppercase tracking-wider text-[10px] mb-1">AI Priority Assessment</p>
+                  <div className="p-3 bg-blue-50/70 rounded-lg border border-blue-200 text-slate-800 text-xs leading-relaxed">
+                    <span className="font-bold text-[#1e3a8a]">Assessment: </span>
+                    {concern.ai_priority_explanation}
+                  </div>
+                </div>
+              )}
+
+              {concern.classification_explanation && (
+                <div className="pt-3 border-t border-slate-100">
+                  <p className="text-slate-400 font-semibold uppercase tracking-wider text-[10px] mb-1">Classification Rationale</p>
+                  <p className="text-slate-600 italic leading-relaxed text-[11px] bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+                    "{concern.classification_explanation}"
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         </div>

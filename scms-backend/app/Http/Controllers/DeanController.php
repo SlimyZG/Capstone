@@ -25,7 +25,7 @@ class DeanController extends Controller
             ->where('target_type', 'dean')
             ->whereIn('status', ['pending', 'in_progress'])
             ->with(['student' => function ($query) {
-                $query->select('id', 'name', 'student_id_number', 'academic_unit_id');
+                $query->select('id', 'name', 'student_id_number', 'academic_unit_id', 'email');
             }, 'academicUnit', 'routingHistory.performer'])
             ->orderBy('submitted_at', 'desc')
             ->get()
@@ -37,12 +37,22 @@ class DeanController extends Controller
                 return $concern;
             });
 
-        // Escalated concerns from department staff
-        $escalatedConcerns = Concern::where('academic_unit_id', $academicUnitId)
-            ->where('target_type', 'department')
-            ->where('status', 'escalated')
+        // Escalated concerns: includes academic concerns forwarded from chairperson / dept staff,
+        // and non-academic concerns forwarded to CAD/Dean for review
+        $escalatedQuery = Concern::where('status', 'escalated');
+        if ($academicUnitId) {
+            $escalatedQuery->where(function ($q) use ($academicUnitId) {
+                $q->where('academic_unit_id', $academicUnitId)
+                  ->orWhere(function ($sub) {
+                      // Also allow viewing non-academic concerns forwarded for administration review
+                      $sub->whereNotNull('forwarded_to_cad_at');
+                  });
+            });
+        }
+        
+        $escalatedConcerns = $escalatedQuery
             ->with(['student' => function ($query) {
-                $query->select('id', 'name', 'student_id_number', 'academic_unit_id');
+                $query->select('id', 'name', 'student_id_number', 'academic_unit_id', 'email');
             }, 'academicUnit', 'department', 'routingHistory.performer'])
             ->orderBy('last_updated', 'desc')
             ->get()
@@ -54,27 +64,55 @@ class DeanController extends Controller
                 return $concern;
             });
 
+        $totalStudents = \App\Models\ClassList::where('academic_unit_id', $academicUnitId)->count();
+
+        // Read-only resolution-target status and historical prediction for each concern (not persisted)
+        $sla = app(\App\Services\ConcernSlaService::class);
+        $predictor = app(\App\Services\ResolutionPredictionService::class);
+        $dataset = $predictor->getCleanHistoricalDataset();
+        $directConcerns->each(function ($c) use ($sla, $predictor, $dataset) {
+            $c->sla = $sla->describe($c);
+            $c->prediction = $predictor->predict($c, $dataset);
+        });
+        $escalatedConcerns->each(function ($c) use ($sla, $predictor, $dataset) {
+            $c->sla = $sla->describe($c);
+            $c->prediction = $predictor->predict($c, $dataset);
+        });
+
         return response()->json([
             'direct' => $directConcerns,
             'escalated' => $escalatedConcerns,
+            'stats' => [
+                'total_students' => $totalStudents,
+                'reports_generated' => 0, // Placeholder until reports are implemented
+            ],
         ]);
     }
 
     /**
-     * Approve an escalated concern — routes it back to department staff.
+     * Approve an escalated concern — routes it back to department staff,
+     * or for Academic/CAD marks as approved by Dean/CAD.
      */
     public function approve(Request $request, int $id)
     {
         $user = $request->user();
 
-        $concern = Concern::where('concern_id', $id)
-            ->where('academic_unit_id', $user->academic_unit_id)
-            ->where('status', 'escalated')
-            ->firstOrFail();
+        $query = Concern::where('concern_id', $id)->where('status', 'escalated');
+        if ($user->academic_unit_id) {
+            $query->where(function ($q) use ($user) {
+                $q->where('academic_unit_id', $user->academic_unit_id)
+                  ->orWhereNotNull('forwarded_to_cad_at');
+            });
+        }
+        $concern = $query->firstOrFail();
 
         $validated = $request->validate([
             'notes' => 'nullable|string',
         ]);
+
+        $isCad = !empty($concern->forwarded_to_cad_at);
+        $action = $isCad ? 'cad_approved' : 'dean_approved';
+        $defaultNote = $isCad ? 'Approved by CAD (Campus Administration).' : 'Approved by Dean.';
 
         $concern->update([
             'status' => 'approved',
@@ -83,13 +121,121 @@ class DeanController extends Controller
 
         ConcernRouting::create([
             'concern_id' => $concern->concern_id,
-            'action' => 'approved',
+            'action' => $action,
             'performed_by' => $user->id,
-            'notes' => $validated['notes'] ?? 'Approved by Dean.',
+            'notes' => $validated['notes'] ?? $defaultNote,
         ]);
 
+        // Notify Department Staff and Student about approval
+        try {
+            $staffQuery = \App\Models\User::where('role', 'dept_staff');
+            if ($concern->workflow_type === 'academic' || $concern->category === 'academic_units') {
+                $staffQuery->where('academic_unit_id', $concern->academic_unit_id);
+            } else {
+                $staffQuery->where('dept_id', $concern->dept_id);
+            }
+            foreach ($staffQuery->get() as $staff) {
+                $staff->notify(new \App\Notifications\ConcernWorkflowNotification(
+                    $concern->concern_id,
+                    $isCad ? 'CAD Approved Concern' : 'Dean Approved Concern',
+                    "Concern '{$concern->title}' has been approved by administration.",
+                    $action,
+                    $concern->workflow_type ?? 'academic',
+                    "/dept-staff/concerns/{$concern->concern_id}"
+                ));
+            }
+
+            if ($concern->student) {
+                $concern->student->notify(new \App\Notifications\ConcernWorkflowNotification(
+                    $concern->concern_id,
+                    'Concern Approved',
+                    "Your concern '{$concern->title}' has been approved by administration.",
+                    $action,
+                    $concern->workflow_type ?? 'academic',
+                    "/student/concerns/{$concern->concern_id}"
+                ));
+            }
+        } catch (\Throwable $ne) {
+            \Illuminate\Support\Facades\Log::warning('Failed sending approval notification: ' . $ne->getMessage());
+        }
+
         return response()->json([
-            'message' => 'Concern approved. Routed back to department.',
+            'message' => 'Concern approved successfully.',
+            'concern' => $concern->fresh(['academicUnit', 'department']),
+        ]);
+    }
+
+    /**
+     * Return a concern for further action / revision (CAD or Dean return).
+     */
+    public function returnForAction(Request $request, int $id)
+    {
+        $user = $request->user();
+
+        $query = Concern::where('concern_id', $id)->where('status', 'escalated');
+        if ($user->academic_unit_id) {
+            $query->where(function ($q) use ($user) {
+                $q->where('academic_unit_id', $user->academic_unit_id)
+                  ->orWhereNotNull('forwarded_to_cad_at');
+            });
+        }
+        $concern = $query->firstOrFail();
+
+        $validated = $request->validate([
+            'notes' => 'nullable|string',
+        ]);
+
+        $isCad = !empty($concern->forwarded_to_cad_at);
+        $action = $isCad ? 'cad_returned' : 'dean_returned';
+        $defaultNote = $isCad ? 'Returned by CAD for further action / revision.' : 'Returned by Dean for further action.';
+
+        $concern->update([
+            'status' => 'returned',
+            'last_updated' => now(),
+        ]);
+
+        ConcernRouting::create([
+            'concern_id' => $concern->concern_id,
+            'action' => $action,
+            'performed_by' => $user->id,
+            'notes' => $validated['notes'] ?? $defaultNote,
+        ]);
+
+        // Notify Department Staff and Student about return
+        try {
+            $staffQuery = \App\Models\User::where('role', 'dept_staff');
+            if ($concern->workflow_type === 'academic' || $concern->category === 'academic_units') {
+                $staffQuery->where('academic_unit_id', $concern->academic_unit_id);
+            } else {
+                $staffQuery->where('dept_id', $concern->dept_id);
+            }
+            foreach ($staffQuery->get() as $staff) {
+                $staff->notify(new \App\Notifications\ConcernWorkflowNotification(
+                    $concern->concern_id,
+                    $isCad ? 'CAD Returned Concern' : 'Dean Returned Concern',
+                    "Concern '{$concern->title}' was returned for revision / further action.",
+                    $action,
+                    $concern->workflow_type ?? 'academic',
+                    "/dept-staff/concerns/{$concern->concern_id}"
+                ));
+            }
+
+            if ($concern->student) {
+                $concern->student->notify(new \App\Notifications\ConcernWorkflowNotification(
+                    $concern->concern_id,
+                    'Concern Returned for Revision',
+                    "Your concern '{$concern->title}' was returned by administration for revision or further action.",
+                    $action,
+                    $concern->workflow_type ?? 'academic',
+                    "/student/concerns/{$concern->concern_id}"
+                ));
+            }
+        } catch (\Throwable $ne) {
+            \Illuminate\Support\Facades\Log::warning('Failed sending return notification: ' . $ne->getMessage());
+        }
+
+        return response()->json([
+            'message' => 'Concern returned to department staff for further action.',
             'concern' => $concern->fresh(['academicUnit', 'department']),
         ]);
     }
@@ -101,10 +247,14 @@ class DeanController extends Controller
     {
         $user = $request->user();
 
-        $concern = Concern::where('concern_id', $id)
-            ->where('academic_unit_id', $user->academic_unit_id)
-            ->where('status', 'escalated')
-            ->firstOrFail();
+        $query = Concern::where('concern_id', $id)->where('status', 'escalated');
+        if ($user->academic_unit_id) {
+            $query->where(function ($q) use ($user) {
+                $q->where('academic_unit_id', $user->academic_unit_id)
+                  ->orWhereNotNull('forwarded_to_cad_at');
+            });
+        }
+        $concern = $query->firstOrFail();
 
         $validated = $request->validate([
             'notes' => 'nullable|string',
@@ -119,7 +269,7 @@ class DeanController extends Controller
             'concern_id' => $concern->concern_id,
             'action' => 'rejected',
             'performed_by' => $user->id,
-            'notes' => $validated['notes'] ?? 'Rejected by Dean.',
+            'notes' => $validated['notes'] ?? 'Rejected by Dean/CAD.',
         ]);
 
         return response()->json([
@@ -129,18 +279,20 @@ class DeanController extends Controller
     }
 
     /**
-     * Resolve a direct concern (target_type='dean').
-     * Dean resolves it from start to finish.
+     * Resolve a concern directly as Dean (direct concern) or final closure.
      */
     public function resolve(Request $request, int $id)
     {
         $user = $request->user();
 
-        $concern = Concern::where('concern_id', $id)
-            ->where('academic_unit_id', $user->academic_unit_id)
-            ->where('target_type', 'dean')
-            ->whereIn('status', ['pending', 'in_progress'])
-            ->firstOrFail();
+        $query = Concern::where('concern_id', $id);
+        if ($user->academic_unit_id) {
+            $query->where(function ($q) use ($user) {
+                $q->where('academic_unit_id', $user->academic_unit_id)
+                  ->orWhereNotNull('forwarded_to_cad_at');
+            });
+        }
+        $concern = $query->whereIn('status', ['pending', 'in_progress', 'approved', 'escalated'])->firstOrFail();
 
         $validated = $request->validate([
             'notes' => 'nullable|string',
@@ -161,9 +313,97 @@ class DeanController extends Controller
 
         \App\Jobs\GenerateResolutionSummary::dispatch($concern);
 
+        // Notify student that concern was resolved by Dean
+        try {
+            if ($concern->student) {
+                $concern->student->notify(new \App\Notifications\ConcernWorkflowNotification(
+                    $concern->concern_id,
+                    'Concern Resolved by Dean',
+                    "Your concern '{$concern->title}' has been resolved by the Dean.",
+                    'resolved',
+                    $concern->workflow_type ?? 'academic',
+                    "/student/concerns/{$concern->concern_id}"
+                ));
+            }
+        } catch (\Throwable $ne) {
+            \Illuminate\Support\Facades\Log::warning('Failed sending dean resolve notification: ' . $ne->getMessage());
+        }
+
         return response()->json([
             'message' => 'Concern resolved successfully.',
             'concern' => $concern->fresh(['academicUnit']),
+        ]);
+    }
+
+    /**
+     * Helper to scope concerns that this Dean is authorized to view/act upon.
+     *
+     * A concern enters the Dean's workflow only when:
+     *   - It has been forwarded/escalated to the Dean (status = 'escalated')
+     *   - It was submitted directly to the Dean (target_type = 'dean')
+     *   - The Dean has already acted on it (status IN approved/returned/rejected/resolved)
+     *   - It was forwarded to CAD for non-academic handling (forwarded_to_cad_at IS NOT NULL)
+     *
+     * Concerns that are still pending or in-progress under department review
+     * (target_type = 'department', status IN ['pending','in_progress']) must NOT
+     * be accessible here — those belong to the department workflow only.
+     */
+    private function scopeForDean($query, $user)
+    {
+        if ($user->academic_unit_id) {
+            $query->where(function ($q) use ($user) {
+                // Academic-unit concerns: only those that have legitimately entered
+                // the Dean's workflow (forwarded, direct, or already actioned).
+                $q->where('academic_unit_id', $user->academic_unit_id)
+                  ->where(function ($inner) {
+                      $inner->where('status', 'escalated')
+                            ->orWhere('target_type', 'dean')
+                            ->orWhereIn('status', ['approved', 'returned', 'rejected', 'resolved']);
+                  });
+                // OR non-academic concerns forwarded to CAD (any unit).
+                $q->orWhereNotNull('forwarded_to_cad_at');
+            });
+        } else {
+            // Dean with no unit assignment: restrict to CAD-forwarded concerns only.
+            $query->whereNotNull('forwarded_to_cad_at');
+        }
+        return $query;
+    }
+
+    /**
+     * Get a specific concern's full details for the authorized Dean.
+     * Preserves student anonymity by masking identifiers if is_anonymous is true.
+     */
+    public function show(Request $request, int $id)
+    {
+        $user = $request->user();
+
+        $query = Concern::where('concern_id', $id);
+        $this->scopeForDean($query, $user);
+
+        $concern = $query->with([
+            'academicUnit',
+            'department',
+            'routingHistory.performer',
+            'priorityOverriddenBy:id,name,role',
+            'messages.sender',
+            'student' => function ($q) {
+                $q->select('id', 'name', 'student_id_number', 'academic_unit_id', 'email');
+            }
+        ])->firstOrFail();
+
+        // Mask student identity if anonymous
+        if ($concern->is_anonymous && $concern->student) {
+            $concern->student->name = 'Anonymous';
+            $concern->student->student_id_number = '********';
+            $concern->student->email = 'anonymous@university.edu';
+        }
+
+        $concern->sla = app(\App\Services\ConcernSlaService::class)->describe($concern);
+        $concern->prediction = app(\App\Services\ResolutionPredictionService::class)->predict($concern);
+
+        return response()->json([
+            'concern' => $concern,
         ]);
     }
 
@@ -174,9 +414,9 @@ class DeanController extends Controller
     {
         $user = $request->user();
 
-        $concern = Concern::where('concern_id', $id)
-            ->where('academic_unit_id', $user->academic_unit_id)
-            ->firstOrFail();
+        $query = Concern::where('concern_id', $id);
+        $this->scopeForDean($query, $user);
+        $concern = $query->firstOrFail();
 
         $validated = $request->validate([
             'body' => 'required|string',
@@ -200,6 +440,13 @@ class DeanController extends Controller
             $concern->update(['last_updated' => now()]);
         }
 
+        // Dispatch in-app notifications to authorized concern participants
+        \App\Notifications\ConcernWorkflowNotification::sendNewMessageNotification(
+            $concern,
+            $message,
+            $user
+        );
+
         return response()->json([
             'message' => 'Reply sent successfully.',
             'data' => $message->load('sender'),
@@ -213,9 +460,9 @@ class DeanController extends Controller
     {
         $user = $request->user();
 
-        $concern = Concern::where('concern_id', $id)
-            ->where('academic_unit_id', $user->academic_unit_id)
-            ->firstOrFail();
+        $query = Concern::where('concern_id', $id);
+        $this->scopeForDean($query, $user);
+        $concern = $query->firstOrFail();
 
         $messages = Message::where('concern_id', $concern->concern_id)
             ->with('sender:id,name,role')
@@ -224,6 +471,78 @@ class DeanController extends Controller
 
         return response()->json([
             'messages' => $messages,
+        ]);
+    }
+
+    /**
+     * Override priority for a concern within the authorized Dean's workflow.
+     */
+    public function priorityOverride(Request $request, int $id)
+    {
+        $user = $request->user();
+
+        // Check if concern exists at all
+        $concern = Concern::find($id);
+        if (!$concern) {
+            return response()->json(['message' => 'Concern not found.'], 404);
+        }
+
+        // Verify that this concern is within the authorized Dean workflow scope
+        $authorizedConcern = $this->scopeForDean(Concern::where('concern_id', $id), $user)->first();
+        if (!$authorizedConcern) {
+            return response()->json([
+                'message' => 'Unauthorized action for this concern.',
+            ], 403);
+        }
+
+        $validated = $request->validate([
+            'priority' => 'required|in:low,medium,high,critical',
+            'reason'   => 'required|string|min:5|max:1000',
+        ]);
+
+        \Illuminate\Support\Facades\DB::transaction(function () use ($authorizedConcern, $validated, $user) {
+            $oldPriority = $authorizedConcern->priority;
+
+            $authorizedConcern->update([
+                'priority'                 => $validated['priority'],
+                'is_priority_overridden'   => true,
+                'priority_override_reason' => $validated['reason'],
+                'priority_overridden_by'   => $user->id,
+                'priority_overridden_at'   => now(),
+                'last_updated'             => now(),
+            ]);
+
+            ConcernRouting::create([
+                'concern_id'   => $authorizedConcern->concern_id,
+                'action'       => 'priority_overridden',
+                'performed_by' => $user->id,
+                'notes'        => "Priority overridden from '{$oldPriority}' to '{$validated['priority']}'. Reason: {$validated['reason']}",
+            ]);
+        });
+
+        if ($validated['priority'] === 'critical') {
+            try {
+                \App\Notifications\ConcernWorkflowNotification::sendCriticalConcernNotification(
+                    $authorizedConcern->fresh(),
+                    'Dean Priority Override'
+                );
+            } catch (\Throwable $ce) {
+                \Illuminate\Support\Facades\Log::warning('Critical concern notification failed on Dean override: ' . $ce->getMessage());
+            }
+        }
+
+        $freshConcern = $authorizedConcern->fresh([
+            'academicUnit',
+            'department',
+            'priorityOverriddenBy:id,name,role',
+            'routingHistory.performer:id,name,role',
+        ]);
+        $freshConcern->sla = app(\App\Services\ConcernSlaService::class)->describe($freshConcern);
+        $freshConcern->prediction = app(\App\Services\ResolutionPredictionService::class)->predict($freshConcern);
+
+        return response()->json([
+            'message' => 'Priority overridden successfully.',
+            'concern' => $freshConcern,
         ]);
     }
 }
