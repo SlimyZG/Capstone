@@ -21,7 +21,11 @@ class AnalyticsController extends Controller
 
         // Scope data for deans and department staff
         if ($user->role === 'dean') {
-            $query->where('academic_unit_id', $user->academic_unit_id);
+            if ($user->academic_unit_id) {
+                $query->where('academic_unit_id', $user->academic_unit_id);
+            } else {
+                $query->whereRaw('1 = 0');
+            }
         } elseif ($user->role === 'dept_staff') {
             $query->where(function ($q) use ($user) {
                 $hasCondition = false;
@@ -30,10 +34,21 @@ class AnalyticsController extends Controller
                     $hasCondition = true;
                 }
                 if ($user->academic_unit_id) {
+                    $acadClause = function ($sub) use ($user) {
+                        $sub->where('academic_unit_id', $user->academic_unit_id)
+                            ->where(function ($w) {
+                                $w->where('workflow_type', 'academic')
+                                  ->orWhere(function ($w2) {
+                                      $w2->where('category', 'academic_units')
+                                         ->whereNull('dept_id');
+                                  });
+                            });
+                    };
+
                     if ($hasCondition) {
-                        $q->orWhere('academic_unit_id', $user->academic_unit_id);
+                        $q->orWhere($acadClause);
                     } else {
-                        $q->where('academic_unit_id', $user->academic_unit_id);
+                        $q->where($acadClause);
                     }
                     $hasCondition = true;
                 }
@@ -222,10 +237,15 @@ class AnalyticsController extends Controller
                         return false;
                     }
                 } elseif ($user->role === 'dept_staff') {
-                    $matchDept = $user->dept_id && (int) ($row['dept_id'] ?? 0) === (int) $user->dept_id;
-                    $matchUnit = $user->academic_unit_id && (int) ($row['academic_unit_id'] ?? 0) === (int) $user->academic_unit_id;
-                    if (!$matchDept && !$matchUnit) {
-                        return false;
+                    $isAcademic = ($row['workflow_type'] ?? '') === 'academic';
+                    if ($isAcademic) {
+                        if (!$user->academic_unit_id || (int) ($row['academic_unit_id'] ?? 0) !== (int) $user->academic_unit_id) {
+                            return false;
+                        }
+                    } else {
+                        if (!$user->dept_id || (int) ($row['dept_id'] ?? 0) !== (int) $user->dept_id) {
+                            return false;
+                        }
                     }
                 }
                 if ($request->filled('priority') && ($row['priority'] ?? '') !== $request->priority) {
@@ -274,7 +294,11 @@ class AnalyticsController extends Controller
         $query = Concern::query();
 
         if ($user->role === 'dean') {
-            $query->where('academic_unit_id', $user->academic_unit_id);
+            if ($user->academic_unit_id) {
+                $query->where('academic_unit_id', $user->academic_unit_id);
+            } else {
+                $query->whereRaw('1 = 0');
+            }
         } elseif ($user->role === 'dept_staff') {
             $query->where(function ($q) use ($user) {
                 $hasCondition = false;
@@ -283,10 +307,21 @@ class AnalyticsController extends Controller
                     $hasCondition = true;
                 }
                 if ($user->academic_unit_id) {
+                    $acadClause = function ($sub) use ($user) {
+                        $sub->where('academic_unit_id', $user->academic_unit_id)
+                            ->where(function ($w) {
+                                $w->where('workflow_type', 'academic')
+                                  ->orWhere(function ($w2) {
+                                      $w2->where('category', 'academic_units')
+                                         ->whereNull('dept_id');
+                                  });
+                            });
+                    };
+
                     if ($hasCondition) {
-                        $q->orWhere('academic_unit_id', $user->academic_unit_id);
+                        $q->orWhere($acadClause);
                     } else {
-                        $q->where('academic_unit_id', $user->academic_unit_id);
+                        $q->where($acadClause);
                     }
                     $hasCondition = true;
                 }
@@ -905,22 +940,21 @@ class AnalyticsController extends Controller
             'category'      => 'nullable|string|max:120',
         ]);
 
-        // Base query: Dean-accessible concerns (same logic as scopeForDean)
-        $scopeBase = Concern::where(function ($q) use ($academicUnitId) {
-            $q->where(function ($inner) use ($academicUnitId) {
-                // Direct-to-dean concerns for this academic unit
-                $inner->where('academic_unit_id', $academicUnitId)
-                      ->where('target_type', 'dean');
-            })->orWhere(function ($inner) use ($academicUnitId) {
-                // Escalated academic concerns for this academic unit
-                $inner->where('academic_unit_id', $academicUnitId)
-                      ->where('status', 'escalated');
-            })->orWhere(function ($inner) {
-                // Non-academic concerns forwarded to CAD/Dean
-                $inner->whereNotNull('forwarded_to_cad_at')
-                      ->where('status', 'escalated');
-            });
-        });
+        // Base query: Dean-accessible concerns (strictly scoped to Dean's academic unit)
+        if (!$academicUnitId) {
+            $scopeBase = Concern::whereRaw('1 = 0');
+        } else {
+            $scopeBase = Concern::where('academic_unit_id', $academicUnitId)
+                ->where(function ($w) {
+                    $w->where('workflow_type', 'academic')
+                      ->orWhere('category', 'academic_units');
+                })
+                ->where(function ($inner) {
+                    $inner->where('target_type', 'dean')
+                          ->orWhere('status', 'escalated')
+                          ->orWhereIn('status', ['approved', 'returned', 'rejected', 'resolved']);
+                });
+        }
 
         $availableCategories = (clone $scopeBase)
             ->select(DB::raw("COALESCE(NULLIF(TRIM(issue_category), ''), NULLIF(TRIM(category), '')) as cat"))
@@ -1400,15 +1434,20 @@ class AnalyticsController extends Controller
             'category'      => 'nullable|string|max:120',
         ]);
 
-        $base = Concern::where(function ($q) use ($academicUnitId) {
-            $q->where(function ($inner) use ($academicUnitId) {
-                $inner->where('academic_unit_id', $academicUnitId)->where('target_type', 'dean');
-            })->orWhere(function ($inner) use ($academicUnitId) {
-                $inner->where('academic_unit_id', $academicUnitId)->where('status', 'escalated');
-            })->orWhere(function ($inner) {
-                $inner->whereNotNull('forwarded_to_cad_at')->where('status', 'escalated');
-            });
-        });
+        if (!$academicUnitId) {
+            $base = Concern::whereRaw('1 = 0');
+        } else {
+            $base = Concern::where('academic_unit_id', $academicUnitId)
+                ->where(function ($w) {
+                    $w->where('workflow_type', 'academic')
+                      ->orWhere('category', 'academic_units');
+                })
+                ->where(function ($inner) {
+                    $inner->where('target_type', 'dean')
+                          ->orWhere('status', 'escalated')
+                          ->orWhereIn('status', ['approved', 'returned', 'rejected', 'resolved']);
+                });
+        }
 
         if (!empty($validated['date_from'])) {
             $base->where('submitted_at', '>=', $validated['date_from']);

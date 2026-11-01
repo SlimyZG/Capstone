@@ -23,10 +23,21 @@ class DeptStaffController extends Controller
                 $hasCondition = true;
             }
             if ($user->academic_unit_id) {
+                $acadClause = function ($sub) use ($user) {
+                    $sub->where('academic_unit_id', $user->academic_unit_id)
+                        ->where(function ($w) {
+                            $w->where('workflow_type', 'academic')
+                              ->orWhere(function ($w2) {
+                                  $w2->where('category', 'academic_units')
+                                     ->whereNull('dept_id');
+                              });
+                        });
+                };
+
                 if ($hasCondition) {
-                    $q->orWhere('academic_unit_id', $user->academic_unit_id);
+                    $q->orWhere($acadClause);
                 } else {
-                    $q->where('academic_unit_id', $user->academic_unit_id);
+                    $q->where($acadClause);
                 }
                 $hasCondition = true;
             }
@@ -388,11 +399,9 @@ class DeptStaffController extends Controller
             $newTarget = $unit->name;
         } else {
             $dept = \App\Models\Department::findOrFail($validated['target_id']);
-            $isSqlite = \Illuminate\Support\Facades\DB::connection()->getDriverName() === 'sqlite';
             $concern->update([
                 'category' => 'operational_departments',
                 'workflow_type' => 'non_academic',
-                'academic_unit_id' => $isSqlite ? ($concern->academic_unit_id ?? 1) : null,
                 'dept_id' => $dept->id,
                 'transferred_from' => $oldTarget,
                 'last_updated' => now(),

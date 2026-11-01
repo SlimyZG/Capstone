@@ -23,6 +23,8 @@ api.interceptors.response.use(
   (error) => {
     if (error.response && error.response.status === 401) {
       localStorage.removeItem('token');
+      localStorage.removeItem('scms_token');
+      localStorage.removeItem('scms_user');
 
       if (
         window.location.pathname !== '/login' &&

@@ -35,8 +35,9 @@ import RecurringIncidentDetails from './pages/RecurringIncidentDetails';
 
 const HomeRedirect = () => {
   const { user, loading } = useAuth();
+  const token = localStorage.getItem('token');
   if (loading) return <div>Loading...</div>;
-  if (!user) return <Navigate to="/login" replace />;
+  if (!user || !token) return <Navigate to="/login" replace />;
   switch (user.role) {
     case 'student': return <Navigate to="/student" replace />;
     case 'admin': return <Navigate to="/admin" replace />;

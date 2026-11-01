@@ -82,9 +82,9 @@ class ChartErrorBoundary extends Component {
 
 const SENTIMENT_COLORS = {
   positive: '#10B981', // Success Green
-  neutral:  '#64748B', // Secondary Slate
+  neutral: '#64748B', // Secondary Slate
   negative: '#F59E0B', // Warning Amber for Negative sentiment
-  urgent:   '#EF4444', // Danger Red for Urgent Emotion Flag
+  urgent: '#EF4444', // Danger Red for Urgent Emotion Flag
 };
 
 // Word cloud tag colors strictly aligned with SCMS Blue/Navy/Teal/Slate/Amber palette
@@ -123,12 +123,12 @@ function WeightedWordCloud({ words = [], onSelectWord = null, activeWord = '' })
       {/* Weighted Tag Cloud Canvas */}
       <div
         data-testid="sentiment-word-cloud"
-        className="min-h-[240px] max-h-[300px] p-4 bg-slate-50/70 rounded-xl border border-slate-200 flex flex-wrap items-center justify-center content-start gap-2 overflow-y-auto"
+        className="min-h-[210px] p-5 bg-slate-50/70 rounded-xl border border-slate-200 flex flex-wrap items-center justify-center gap-2.5 overflow-hidden"
       >
-        {words.slice(0, 22).map((item, idx) => {
+        {words.map((item, idx) => {
           const val = item.value || item.count || 1;
           const weight = (val - minVal) / range; // 0.0 to 1.0
-          const fontSize = Math.round(12 + weight * 12); // 12px to 24px
+          const fontSize = Math.round(12 + weight * 15); // 12px to 27px
           const color = THEME_PALETTE[idx % THEME_PALETTE.length];
           const fontWeight = weight > 0.6 ? 800 : weight > 0.3 ? 700 : 600;
           const isSelected = activeWord === item.text;
@@ -144,20 +144,17 @@ function WeightedWordCloud({ words = [], onSelectWord = null, activeWord = '' })
                 backgroundColor: isSelected ? '#2563EB' : '#FFFFFF',
                 fontWeight,
               }}
-              className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg border shadow-2xs transition-all select-none ${
-                isSelected
-                  ? 'border-blue-700 ring-2 ring-blue-300 scale-105'
-                  : 'border-slate-200 hover:border-blue-400 hover:shadow-sm hover:scale-105'
-              }`}
-              title={`${item.text}: ${val} occurrence${val > 1 ? 's' : ''}${
-                item.percentage ? ` (${item.percentage}% of analyzed concerns)` : ''
-              }`}
+              className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg border shadow-2xs transition-all select-none ${isSelected
+                ? 'border-blue-700 ring-2 ring-blue-300 scale-105'
+                : 'border-slate-200 hover:border-blue-400 hover:shadow-sm hover:scale-105'
+                }`}
+              title={`${item.text}: ${val} occurrence${val > 1 ? 's' : ''}${item.percentage ? ` (${item.percentage}% of analyzed concerns)` : ''
+                }`}
             >
               <span>{item.text}</span>
               <span
-                className={`text-[10px] font-semibold px-1.5 py-0.2 rounded-full ${
-                  isSelected ? 'bg-blue-800 text-blue-100' : 'bg-slate-100 text-slate-500'
-                }`}
+                className={`text-[10px] font-semibold px-1.5 py-0.2 rounded-full ${isSelected ? 'bg-blue-800 text-blue-100' : 'bg-slate-100 text-slate-500'
+                  }`}
               >
                 {val}
               </span>
@@ -330,7 +327,11 @@ const SentimentDashboard = () => {
 
   useEffect(() => {
     fetchSentimentData(false);
-  }, [fetchSentimentData]);
+  }, [filters.date_from, filters.date_to, filters.priority, filters.status, filters.issue_category]);
+
+  useEffect(() => {
+    fetchSentimentData(true);
+  }, [textFilters.sentiment, textFilters.category, textFilters.subcategory]);
 
   useEffect(() => {
     fetchTrendNarrative();
@@ -360,24 +361,24 @@ const SentimentDashboard = () => {
 
   // Sentiment Distribution Calculations
   const positiveCount = data.distribution?.positive || 0;
-  const neutralCount  = data.distribution?.neutral || 0;
+  const neutralCount = data.distribution?.neutral || 0;
   const negativeCount = data.distribution?.negative || 0;
-  const urgentCount   = data.distribution?.urgent || 0;
+  const urgentCount = data.distribution?.urgent || 0;
   const negativeOrUrgentCount = negativeCount + urgentCount;
   const totalSentimentCount = positiveCount + neutralCount + negativeCount + urgentCount;
 
-  const positivePct  = totalSentimentCount > 0 ? Math.round((positiveCount / totalSentimentCount) * 100) : 0;
-  const neutralPct   = totalSentimentCount > 0 ? Math.round((neutralCount / totalSentimentCount) * 100) : 0;
-  const negativePct  = totalSentimentCount > 0 ? Math.round((negativeCount / totalSentimentCount) * 100) : 0;
-  const urgentPct    = totalSentimentCount > 0 ? Math.round((urgentCount / totalSentimentCount) * 100) : 0;
+  const positivePct = totalSentimentCount > 0 ? Math.round((positiveCount / totalSentimentCount) * 100) : 0;
+  const neutralPct = totalSentimentCount > 0 ? Math.round((neutralCount / totalSentimentCount) * 100) : 0;
+  const negativePct = totalSentimentCount > 0 ? Math.round((negativeCount / totalSentimentCount) * 100) : 0;
+  const urgentPct = totalSentimentCount > 0 ? Math.round((urgentCount / totalSentimentCount) * 100) : 0;
   const negUrgentPct = totalSentimentCount > 0 ? Math.round((negativeOrUrgentCount / totalSentimentCount) * 100) : 0;
 
   const pieData = useMemo(() => {
     return [
-      { name: 'Positive',            key: 'positive', value: positiveCount, color: SENTIMENT_COLORS.positive },
-      { name: 'Neutral',             key: 'neutral',  value: neutralCount,  color: SENTIMENT_COLORS.neutral },
-      { name: 'Negative',            key: 'negative', value: negativeCount, color: SENTIMENT_COLORS.negative },
-      { name: 'Urgent Emotion Flag', key: 'urgent',   value: urgentCount,   color: SENTIMENT_COLORS.urgent },
+      { name: 'Positive', key: 'positive', value: positiveCount, color: SENTIMENT_COLORS.positive },
+      { name: 'Neutral', key: 'neutral', value: neutralCount, color: SENTIMENT_COLORS.neutral },
+      { name: 'Negative', key: 'negative', value: negativeCount, color: SENTIMENT_COLORS.negative },
+      { name: 'Urgent Emotion Flag', key: 'urgent', value: urgentCount, color: SENTIMENT_COLORS.urgent },
     ].filter((d) => d.value > 0);
   }, [positiveCount, neutralCount, negativeCount, urgentCount]);
 
@@ -555,11 +556,10 @@ const SentimentDashboard = () => {
                 key={preset.id}
                 type="button"
                 onClick={() => handleTimePreset(preset.id)}
-                className={`px-3 py-1.5 rounded-md font-semibold transition-colors ${
-                  filters.timePreset === preset.id
-                    ? 'bg-[#2563EB] text-white shadow-2xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
+                className={`px-3 py-1.5 rounded-md font-semibold transition-colors ${filters.timePreset === preset.id
+                  ? 'bg-[#2563EB] text-white shadow-2xs'
+                  : 'text-slate-600 hover:text-slate-900'
+                  }`}
               >
                 {preset.label}
               </button>
@@ -642,14 +642,14 @@ const SentimentDashboard = () => {
             textFilters.sentiment !== 'all' ||
             textFilters.category ||
             textFilters.subcategory) && (
-            <button
-              type="button"
-              onClick={handleResetFilters}
-              className="text-xs font-semibold text-slate-500 hover:text-slate-800 px-2.5 py-1.5"
-            >
-              Reset All
-            </button>
-          )}
+              <button
+                type="button"
+                onClick={handleResetFilters}
+                className="text-xs font-semibold text-slate-500 hover:text-slate-800 px-2.5 py-1.5"
+              >
+                Reset All
+              </button>
+            )}
           <button
             type="button"
             onClick={handleRefreshAll}
@@ -763,17 +763,18 @@ const SentimentDashboard = () => {
               </span>
             </div>
 
-            <div className="bg-blue-50/50 p-4 rounded-xl border border-blue-100 text-slate-800 text-sm leading-relaxed">
-              <p className="italic font-medium text-slate-800">
-                &ldquo;{trends?.narrative || fallbackNarrative}&rdquo;
-              </p>
-              {trendsLoading && (
-                <div className="mt-2 flex items-center gap-1.5 text-[11px] text-blue-600 font-medium">
-                  <RefreshCw size={11} className="animate-spin shrink-0" />
-                  <span>Checking AI narrative engine for additional insights...</span>
-                </div>
-              )}
-            </div>
+            {trendsLoading ? (
+              <div className="bg-slate-50 p-5 rounded-xl border border-slate-200 flex items-center gap-3 text-xs text-slate-500">
+                <RefreshCw size={16} className="animate-spin text-blue-600 shrink-0" />
+                <span>Synthesizing longitudinal sentiment narrative...</span>
+              </div>
+            ) : (
+              <div className="bg-blue-50/50 p-4 rounded-xl border border-blue-100 text-slate-800 text-sm leading-relaxed">
+                <p className="italic font-medium text-slate-800">
+                  &ldquo;{trends?.narrative || fallbackNarrative}&rdquo;
+                </p>
+              </div>
+            )}
 
             {/* 30-Day Quick Pulse Pills */}
             <div className="grid grid-cols-3 gap-3 mt-4">
@@ -903,11 +904,10 @@ const SentimentDashboard = () => {
                               sentiment: prev.sentiment === item.key ? 'all' : item.key,
                             }))
                           }
-                          className={`w-full flex items-center justify-between text-xs p-2 rounded-lg border transition-all ${
-                            isSelected
-                              ? 'bg-blue-50 border-blue-300 ring-1 ring-blue-300'
-                              : 'bg-slate-50 border-slate-200/70 hover:bg-slate-100/80'
-                          }`}
+                          className={`w-full flex items-center justify-between text-xs p-2 rounded-lg border transition-all ${isSelected
+                            ? 'bg-blue-50 border-blue-300 ring-1 ring-blue-300'
+                            : 'bg-slate-50 border-slate-200/70 hover:bg-slate-100/80'
+                            }`}
                         >
                           <div className="flex items-center gap-2">
                             <span
@@ -1108,11 +1108,10 @@ const SentimentDashboard = () => {
                           subcategory: '',
                         }))
                       }
-                      className={`p-3 rounded-xl border transition-all cursor-pointer ${
-                        isSelected
-                          ? 'bg-blue-50/70 border-blue-300 ring-1 ring-blue-300'
-                          : 'bg-slate-50/70 border-slate-200/80 hover:border-blue-300 hover:bg-white'
-                      }`}
+                      className={`p-3 rounded-xl border transition-all cursor-pointer ${isSelected
+                        ? 'bg-blue-50/70 border-blue-300 ring-1 ring-blue-300'
+                        : 'bg-slate-50/70 border-slate-200/80 hover:border-blue-300 hover:bg-white'
+                        }`}
                     >
                       <div className="flex items-center justify-between text-xs mb-1.5">
                         <span className="font-bold text-slate-900 flex items-center gap-1.5">
@@ -1210,11 +1209,10 @@ const SentimentDashboard = () => {
                   key={s.id}
                   type="button"
                   onClick={() => setTextFilters((prev) => ({ ...prev, sentiment: s.id }))}
-                  className={`px-2.5 py-1 rounded-md font-semibold transition-colors ${
-                    textFilters.sentiment === s.id
-                      ? 'bg-[#2563EB] text-white shadow-2xs'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
+                  className={`px-2.5 py-1 rounded-md font-semibold transition-colors ${textFilters.sentiment === s.id
+                    ? 'bg-[#2563EB] text-white shadow-2xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                    }`}
                 >
                   {s.label}
                 </button>
@@ -1269,21 +1267,21 @@ const SentimentDashboard = () => {
               textFilters.category ||
               textFilters.subcategory ||
               textFilters.searchWord) && (
-              <button
-                type="button"
-                onClick={() =>
-                  setTextFilters({
-                    sentiment: 'all',
-                    category: '',
-                    subcategory: '',
-                    searchWord: '',
-                  })
-                }
-                className="text-xs font-bold text-blue-600 hover:text-blue-800 px-2 py-1"
-              >
-                Clear Text Filter
-              </button>
-            )}
+                <button
+                  type="button"
+                  onClick={() =>
+                    setTextFilters({
+                      sentiment: 'all',
+                      category: '',
+                      subcategory: '',
+                      searchWord: '',
+                    })
+                  }
+                  className="text-xs font-bold text-blue-600 hover:text-blue-800 px-2 py-1"
+                >
+                  Clear Text Filter
+                </button>
+              )}
           </div>
         </div>
 
@@ -1292,38 +1290,38 @@ const SentimentDashboard = () => {
           textFilters.category ||
           textFilters.subcategory ||
           textFilters.searchWord) && (
-          <div className="flex items-center justify-between bg-blue-50/70 border border-blue-200 rounded-lg px-4 py-2 text-xs text-blue-900">
-            <div className="flex items-center gap-2 flex-wrap">
-              <SlidersHorizontal size={14} className="text-blue-600" />
-              <span className="font-semibold">Active Text Filter:</span>
-              {textFilters.sentiment !== 'all' && (
-                <span className="px-2 py-0.5 rounded bg-white border border-blue-200 font-bold capitalize">
-                  Sentiment: {textFilters.sentiment === 'urgent' ? 'Urgent Emotion Flag' : textFilters.sentiment}
-                </span>
-              )}
-              {textFilters.category && (
-                <span className="px-2 py-0.5 rounded bg-white border border-blue-200 font-bold">
-                  Category: {textFilters.category}
-                </span>
-              )}
-              {textFilters.subcategory && (
-                <span className="px-2 py-0.5 rounded bg-white border border-blue-200 font-bold">
-                  Subcategory: {textFilters.subcategory}
-                </span>
-              )}
-              {textFilters.searchWord && (
-                <span className="px-2 py-0.5 rounded bg-white border border-blue-200 font-bold">
-                  Word: &ldquo;{textFilters.searchWord}&rdquo;
+            <div className="flex items-center justify-between bg-blue-50/70 border border-blue-200 rounded-lg px-4 py-2 text-xs text-blue-900">
+              <div className="flex items-center gap-2 flex-wrap">
+                <SlidersHorizontal size={14} className="text-blue-600" />
+                <span className="font-semibold">Active Text Filter:</span>
+                {textFilters.sentiment !== 'all' && (
+                  <span className="px-2 py-0.5 rounded bg-white border border-blue-200 font-bold capitalize">
+                    Sentiment: {textFilters.sentiment === 'urgent' ? 'Urgent Emotion Flag' : textFilters.sentiment}
+                  </span>
+                )}
+                {textFilters.category && (
+                  <span className="px-2 py-0.5 rounded bg-white border border-blue-200 font-bold">
+                    Category: {textFilters.category}
+                  </span>
+                )}
+                {textFilters.subcategory && (
+                  <span className="px-2 py-0.5 rounded bg-white border border-blue-200 font-bold">
+                    Subcategory: {textFilters.subcategory}
+                  </span>
+                )}
+                {textFilters.searchWord && (
+                  <span className="px-2 py-0.5 rounded bg-white border border-blue-200 font-bold">
+                    Word: &ldquo;{textFilters.searchWord}&rdquo;
+                  </span>
+                )}
+              </div>
+              {textLoading && (
+                <span className="inline-flex items-center gap-1 text-blue-700 font-semibold">
+                  <RefreshCw size={12} className="animate-spin" /> Updating...
                 </span>
               )}
             </div>
-            {textLoading && (
-              <span className="inline-flex items-center gap-1 text-blue-700 font-semibold">
-                <RefreshCw size={12} className="animate-spin" /> Updating...
-              </span>
-            )}
-          </div>
-        )}
+          )}
 
         {/* 3-Column Layout: Word Cloud + Most Frequently Used Words + Frequently Mentioned Phrases */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

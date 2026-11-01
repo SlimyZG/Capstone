@@ -6,8 +6,9 @@ const AuthContext = createContext();
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(() => {
     try {
+      const token = localStorage.getItem('token');
       const cached = localStorage.getItem('scms_user');
-      return cached ? JSON.parse(cached) : null;
+      return (token && cached) ? JSON.parse(cached) : null;
     } catch {
       return null;
     }
@@ -24,9 +25,14 @@ export const AuthProvider = ({ children }) => {
           localStorage.setItem('scms_user', JSON.stringify(res.data.user));
         } catch (error) {
           localStorage.removeItem('token');
+          localStorage.removeItem('scms_token');
           localStorage.removeItem('scms_user');
           setUser(null);
         }
+      } else {
+        localStorage.removeItem('scms_user');
+        localStorage.removeItem('scms_token');
+        setUser(null);
       }
       setLoading(false);
     };
@@ -46,6 +52,7 @@ export const AuthProvider = ({ children }) => {
       await api.post('/logout');
     } finally {
       localStorage.removeItem('token');
+      localStorage.removeItem('scms_token');
       localStorage.removeItem('scms_user');
       setUser(null);
     }

@@ -20,8 +20,23 @@ class DeanController extends Controller
         $user = $request->user();
         $academicUnitId = $user->academic_unit_id;
 
-        // Direct concerns sent to "My Dean"
+        if (!$academicUnitId) {
+            return response()->json([
+                'direct' => [],
+                'escalated' => [],
+                'stats' => [
+                    'total_students' => 0,
+                    'reports_generated' => 0,
+                ],
+            ]);
+        }
+
+        // Direct concerns sent to "My Dean" strictly within the Dean's academic unit
         $directConcerns = Concern::where('academic_unit_id', $academicUnitId)
+            ->where(function ($q) {
+                $q->where('workflow_type', 'academic')
+                  ->orWhere('category', 'academic_units');
+            })
             ->where('target_type', 'dean')
             ->whereIn('status', ['pending', 'in_progress'])
             ->with(['student' => function ($query) {
@@ -37,18 +52,13 @@ class DeanController extends Controller
                 return $concern;
             });
 
-        // Escalated concerns: includes academic concerns forwarded from chairperson / dept staff,
-        // and non-academic concerns forwarded to CAD/Dean for review
-        $escalatedQuery = Concern::where('status', 'escalated');
-        if ($academicUnitId) {
-            $escalatedQuery->where(function ($q) use ($academicUnitId) {
-                $q->where('academic_unit_id', $academicUnitId)
-                  ->orWhere(function ($sub) {
-                      // Also allow viewing non-academic concerns forwarded for administration review
-                      $sub->whereNotNull('forwarded_to_cad_at');
-                  });
-            });
-        }
+        // Escalated academic concerns strictly within the Dean's academic unit
+        $escalatedQuery = Concern::where('academic_unit_id', $academicUnitId)
+            ->where(function ($q) {
+                $q->where('workflow_type', 'academic')
+                  ->orWhere('category', 'academic_units');
+            })
+            ->where('status', 'escalated');
         
         $escalatedConcerns = $escalatedQuery
             ->with(['student' => function ($query) {
@@ -98,12 +108,7 @@ class DeanController extends Controller
         $user = $request->user();
 
         $query = Concern::where('concern_id', $id)->where('status', 'escalated');
-        if ($user->academic_unit_id) {
-            $query->where(function ($q) use ($user) {
-                $q->where('academic_unit_id', $user->academic_unit_id)
-                  ->orWhereNotNull('forwarded_to_cad_at');
-            });
-        }
+        $this->scopeForDean($query, $user);
         $concern = $query->firstOrFail();
 
         $validated = $request->validate([
@@ -173,12 +178,7 @@ class DeanController extends Controller
         $user = $request->user();
 
         $query = Concern::where('concern_id', $id)->where('status', 'escalated');
-        if ($user->academic_unit_id) {
-            $query->where(function ($q) use ($user) {
-                $q->where('academic_unit_id', $user->academic_unit_id)
-                  ->orWhereNotNull('forwarded_to_cad_at');
-            });
-        }
+        $this->scopeForDean($query, $user);
         $concern = $query->firstOrFail();
 
         $validated = $request->validate([
@@ -248,12 +248,7 @@ class DeanController extends Controller
         $user = $request->user();
 
         $query = Concern::where('concern_id', $id)->where('status', 'escalated');
-        if ($user->academic_unit_id) {
-            $query->where(function ($q) use ($user) {
-                $q->where('academic_unit_id', $user->academic_unit_id)
-                  ->orWhereNotNull('forwarded_to_cad_at');
-            });
-        }
+        $this->scopeForDean($query, $user);
         $concern = $query->firstOrFail();
 
         $validated = $request->validate([
@@ -286,12 +281,7 @@ class DeanController extends Controller
         $user = $request->user();
 
         $query = Concern::where('concern_id', $id);
-        if ($user->academic_unit_id) {
-            $query->where(function ($q) use ($user) {
-                $q->where('academic_unit_id', $user->academic_unit_id)
-                  ->orWhereNotNull('forwarded_to_cad_at');
-            });
-        }
+        $this->scopeForDean($query, $user);
         $concern = $query->whereIn('status', ['pending', 'in_progress', 'approved', 'escalated'])->firstOrFail();
 
         $validated = $request->validate([
@@ -351,21 +341,19 @@ class DeanController extends Controller
     private function scopeForDean($query, $user)
     {
         if ($user->academic_unit_id) {
-            $query->where(function ($q) use ($user) {
-                // Academic-unit concerns: only those that have legitimately entered
-                // the Dean's workflow (forwarded, direct, or already actioned).
-                $q->where('academic_unit_id', $user->academic_unit_id)
+            $query->where('academic_unit_id', $user->academic_unit_id)
+                  ->where(function ($q) {
+                      $q->where('workflow_type', 'academic')
+                        ->orWhere('category', 'academic_units');
+                  })
                   ->where(function ($inner) {
                       $inner->where('status', 'escalated')
                             ->orWhere('target_type', 'dean')
                             ->orWhereIn('status', ['approved', 'returned', 'rejected', 'resolved']);
                   });
-                // OR non-academic concerns forwarded to CAD (any unit).
-                $q->orWhereNotNull('forwarded_to_cad_at');
-            });
         } else {
-            // Dean with no unit assignment: restrict to CAD-forwarded concerns only.
-            $query->whereNotNull('forwarded_to_cad_at');
+            // Dean with no unit assignment: fail-closed to prevent unauthorized access
+            $query->whereRaw('1 = 0');
         }
         return $query;
     }

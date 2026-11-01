@@ -17,7 +17,8 @@ const LoginPage = () => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (user) {
+    const token = localStorage.getItem('token');
+    if (user && token) {
       if (user.role === 'student') navigate('/student', { replace: true });
       else if (user.role === 'admin') navigate('/admin', { replace: true });
       else if (user.role === 'sao') navigate('/sao', { replace: true });
