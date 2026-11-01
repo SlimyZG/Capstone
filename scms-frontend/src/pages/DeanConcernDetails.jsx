@@ -190,7 +190,7 @@ const DeanConcernDetails = () => {
   const isAcademic = concern.workflow_type === 'academic' || concern.category === 'academic_units';
   const studentName = concern.student?.name || (concern.is_anonymous ? 'Anonymous' : 'Student');
   const studentId = concern.student?.student_id_number || (concern.is_anonymous ? '********' : '—');
-  const departmentName = concern.department?.name || concern.academic_unit?.name || 'Computer Studies';
+  const departmentName = concern.department?.name || concern.academic_unit?.name || 'Academic Unit';
   const isEscalated = concern.status === 'escalated';
   const canResolve = ['pending', 'in_progress', 'approved', 'escalated'].includes(concern.status);
 

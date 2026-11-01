@@ -133,6 +133,7 @@ const StudentConcernDetails = () => {
     const deanDecision = findAction(['dean_approved', 'approved', 'dean_returned', 'rejected', 'resolved']);
     const resolvedRecord = findAction(['resolved']) || (concern.status === 'resolved' ? { created_at: concern.resolved_at } : null);
 
+    const academicUnitTitle = concern.academic_unit?.name || 'Academic Unit';
     // Determine Stage 2 (Chairperson Review) state
     let stage2Status = 'upcoming';
     let stage2Notes = null;
@@ -147,7 +148,7 @@ const StudentConcernDetails = () => {
       stage2Notes = chairpersonReviewRecord?.notes || 'Currently under chairperson / department review.';
     } else if (concern.status === 'pending') {
       stage2Status = 'current';
-      stage2Notes = 'Awaiting initial review by Computer Studies Chairperson.';
+      stage2Notes = `Awaiting initial review by ${academicUnitTitle} Chairperson.`;
     }
 
     // Determine Stage 3 (Forward to Dean) state
@@ -199,8 +200,8 @@ const StudentConcernDetails = () => {
       },
       {
         id: 2,
-        title: 'Computer Studies Chairperson Review',
-        description: 'Review by Chairperson / CCS Department Staff',
+        title: `${academicUnitTitle} Chairperson Review`,
+        description: `Review by Chairperson / ${academicUnitTitle} Academic Staff`,
         status: stage2Status,
         date: stage2Date,
         notes: stage2Notes,
@@ -424,7 +425,7 @@ const StudentConcernDetails = () => {
                   <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Workflow Track</p>
                   <p className="text-sm font-medium text-slate-900">
                     {isAcademic 
-                      ? 'Academic (Computer Studies Chairperson → Dean)' 
+                      ? `Academic (${concern.academic_unit?.name || 'Academic Unit'} Chairperson → Dean)` 
                       : 'Non-Academic (Department Review → CAD Approval)'}
                   </p>
                 </div>

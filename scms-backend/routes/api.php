@@ -67,6 +67,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // ── Student Routes ─────────────────────────────────────────────────
     Route::middleware('role:student')->group(function () {
+        Route::post('/concerns/recommend-routing', [ConcernController::class, 'recommendRouting']);
         Route::post('/concerns', [ConcernController::class, 'store']);
         Route::get('/concerns', [ConcernController::class, 'index']);
         Route::get('/concerns/{id}', [ConcernController::class, 'show']);

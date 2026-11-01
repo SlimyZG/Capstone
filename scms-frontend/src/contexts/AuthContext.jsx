@@ -4,7 +4,14 @@ import api from '../api';
 const AuthContext = createContext();
 
 export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null);
+  const [user, setUser] = useState(() => {
+    try {
+      const cached = localStorage.getItem('scms_user');
+      return cached ? JSON.parse(cached) : null;
+    } catch {
+      return null;
+    }
+  });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -14,8 +21,11 @@ export const AuthProvider = ({ children }) => {
         try {
           const res = await api.get('/user');
           setUser(res.data.user);
+          localStorage.setItem('scms_user', JSON.stringify(res.data.user));
         } catch (error) {
           localStorage.removeItem('token');
+          localStorage.removeItem('scms_user');
+          setUser(null);
         }
       }
       setLoading(false);
@@ -26,6 +36,7 @@ export const AuthProvider = ({ children }) => {
   const login = async (credentials) => {
     const res = await api.post('/login', credentials);
     localStorage.setItem('token', res.data.token);
+    localStorage.setItem('scms_user', JSON.stringify(res.data.user));
     setUser(res.data.user);
     return res.data;
   };
@@ -35,6 +46,7 @@ export const AuthProvider = ({ children }) => {
       await api.post('/logout');
     } finally {
       localStorage.removeItem('token');
+      localStorage.removeItem('scms_user');
       setUser(null);
     }
   };

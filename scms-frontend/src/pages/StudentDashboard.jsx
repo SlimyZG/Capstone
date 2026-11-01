@@ -166,7 +166,7 @@ const StudentDashboard = () => {
             recentConcerns.map(concern => {
               const departmentLabel = concern.department?.name 
                 || concern.academic_unit?.name 
-                || (concern.workflow_type === 'academic' ? 'College of Computer Studies' : 'Department');
+                || (concern.workflow_type === 'academic' ? 'Academic College' : 'Department');
               
               return (
                 <Link

@@ -190,7 +190,7 @@ const StudentConcernsList = () => {
                       </div>
                     </td>
                     <td className="px-5 py-4 text-xs font-medium text-slate-700 whitespace-nowrap">
-                      {concern.department ? concern.department.name : (concern.academic_unit?.name || 'Computer Studies')}
+                      {concern.department ? concern.department.name : (concern.academic_unit?.name || 'Academic Unit')}
                     </td>
                     <td className="px-5 py-4 whitespace-nowrap">
                       <StatusBadge status={concern.status} />

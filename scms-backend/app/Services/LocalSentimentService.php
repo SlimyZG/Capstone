@@ -421,4 +421,145 @@ class LocalSentimentService
 
         return $summary;
     }
+
+    /**
+     * Fallback keyword-based operational department recommender.
+     *
+     * @param  string  $title
+     * @param  string  $description
+     * @param  \Illuminate\Support\Collection|array  $departments
+     * @return array{
+     *     recommended_department_id: ?int,
+     *     recommended_department_name: ?string,
+     *     confidence: float,
+     *     explanation: string,
+     *     requires_manual_selection: bool,
+     *     source: string
+     * }
+     */
+    public function recommendOperationalDepartment(string $title, string $description, $departments): array
+    {
+        $text = strtolower($title . ' ' . $description);
+
+        $departmentKeywords = [
+            'cashier' => [
+                'keywords' => ['cashier', 'tuition', 'payment', 'pay', 'receipt', 'bank transfer', 'overpayment', 'assessment', 'counter', 'downpayment', 'installment', 'fee balance', 'partial payment', 'billing'],
+                'explanation' => 'Concern involves tuition payment, official receipts, or cashier window transactions.',
+            ],
+            'accounting' => [
+                'keywords' => ['accounting', 'ledger', 'promissory note', 'statement of account', 'soa', 'clearance fee', 'financial hold', 'account balance', 'unsettled account'],
+                'explanation' => 'Concern involves student financial ledger records, promissory notes, or clearance balances.',
+            ],
+            'registrar' => [
+                'keywords' => ['registrar', 'transcript', 'tor', 'diploma', 'form 137', 'certificate of registration', 'cor', 'honorable dismissal', 'cross-enrollment', 'credentials', 'release of records', 'shifting', 'graduation clearance', 'cav'],
+                'explanation' => 'Concern involves academic credentials, registration certificates, official transcripts, or enrollment records.',
+            ],
+            'edp' => [
+                'keywords' => ['edp', 'portal', 'student portal', 'wifi', 'internet', 'canvas', 'lms', 'password reset', 'locked account', 'login error', 'system error', 'server', 'network', 'connection', 'website', 'it infrastructure'],
+                'explanation' => 'Concern involves student portal access, campus Wi-Fi/network connectivity, or electronic data processing systems.',
+            ],
+            'clinic' => [
+                'keywords' => ['clinic', 'medical', 'doctor', 'nurse', 'medicine', 'sick', 'medical certificate', 'med cert', 'first aid', 'injury', 'physical exam', 'fever', 'dental', 'health'],
+                'explanation' => 'Concern involves student health services, clinic checkups, medical certificates, or campus first-aid.',
+            ],
+            'guidance' => [
+                'keywords' => ['guidance', 'counselor', 'counseling', 'mental health', 'emotional', 'stress', 'anxiety', 'depression', 'psychological', 'bullying support', 'well-being', 'personal crisis'],
+                'explanation' => 'Concern involves student mental health, counseling consultations, or psychological support.',
+            ],
+            'scholarship' => [
+                'keywords' => ['scholarship', 'scholar', 'ched', 'unifast', 'financial aid', 'grant', 'discount', 'voucher', 'stipend', 'subsidy'],
+                'explanation' => 'Concern involves institutional scholarships, government educational subsidies, or tuition discounts.',
+            ],
+            'security' => [
+                'keywords' => ['csu', 'security', 'guard', 'lost and found', 'lost id', 'stolen', 'theft', 'gate', 'campus entrance', 'parking', 'safety', 'vehicle', 'confiscated', 'trespassing'],
+                'explanation' => 'Concern involves campus security, gate entry, lost-and-found items, parking, or civil security.',
+            ],
+            'sao' => [
+                'keywords' => ['sao', 'student affairs', 'student council', 'organization', 'student club', 'activity permit', 'student handbook', 'disciplinary', 'uniform policy', 'id validation', 'student governance'],
+                'explanation' => 'Concern involves student organization permits, campus activities, student handbook policies, or student affairs governance.',
+            ],
+            'sto' => [
+                'keywords' => ['sto', 'seagoing', 'shipboard', 'onboard training', 'cadetship', 'vessel', 'apprenticeship', 'shipping company', 'embarkation', 'sea training'],
+                'explanation' => 'Concern involves seagoing shipboard training requirements, cadet apprenticeships, or maritime vessel assignments.',
+            ],
+            'superintendent' => [
+                'keywords' => ['maritime superintendent', 'superintendent', 'maritime compliance', 'maritime training simulator', 'deck department', 'engine cadet'],
+                'explanation' => 'Concern involves maritime program compliance, superintendent oversight, or training simulators.',
+            ],
+            'director' => [
+                'keywords' => ['campus director', 'director', 'executive', 'institutional appeal', 'administrative escalation', "director's office"],
+                'explanation' => 'Concern involves university executive escalation, institutional appeals, or director office inquiries.',
+            ],
+            'hrd' => [
+                'keywords' => ['hrd', 'human resource', 'staff conduct', 'faculty complaint', 'employee behavior', 'personnel', 'instructor complaint'],
+                'explanation' => 'Concern involves university personnel conduct, administrative staff grievances, or human resources.',
+            ],
+        ];
+
+        $deptCollection = collect($departments);
+        $bestMatch = null;
+        $highestScore = 0;
+        $matchedExplanation = '';
+
+        foreach ($departmentKeywords as $profileKey => $data) {
+            // Find corresponding department in actual DB records
+            $deptModel = $deptCollection->first(function ($d) use ($profileKey) {
+                $name = strtolower($d->name);
+                switch ($profileKey) {
+                    case 'cashier': return str_contains($name, 'cashier');
+                    case 'accounting': return str_contains($name, 'accounting');
+                    case 'registrar': return str_contains($name, 'registrar');
+                    case 'edp': return str_contains($name, 'edp') || str_contains($name, 'data processing');
+                    case 'clinic': return str_contains($name, 'clinic') || str_contains($name, 'medical');
+                    case 'guidance': return str_contains($name, 'guidance');
+                    case 'scholarship': return str_contains($name, 'scholarship');
+                    case 'security': return str_contains($name, 'csu') || str_contains($name, 'security');
+                    case 'sao': return str_contains($name, 'sao') || str_contains($name, 'student affairs');
+                    case 'sto': return str_contains($name, 'sto') || str_contains($name, 'seagoing');
+                    case 'superintendent': return str_contains($name, 'superintendent');
+                    case 'director': return str_contains($name, 'director');
+                    case 'hrd': return str_contains($name, 'hrd') || str_contains($name, 'human resource');
+                    default: return false;
+                }
+            });
+
+            if (!$deptModel) {
+                continue;
+            }
+
+            $score = 0;
+            foreach ($data['keywords'] as $kw) {
+                if (preg_match('/\b' . preg_quote($kw, '/') . '\b/i', $text)) {
+                    $score += (strlen($kw) > 6 ? 2 : 1);
+                }
+            }
+
+            if ($score > $highestScore) {
+                $highestScore = $score;
+                $bestMatch = $deptModel;
+                $matchedExplanation = $data['explanation'];
+            }
+        }
+
+        if ($bestMatch && $highestScore >= 1) {
+            $confidence = $highestScore >= 3 ? 0.85 : ($highestScore === 2 ? 0.70 : 0.55);
+            return [
+                'recommended_department_id' => $bestMatch->id,
+                'recommended_department_name' => $bestMatch->name,
+                'confidence' => $confidence,
+                'explanation' => $matchedExplanation,
+                'requires_manual_selection' => $confidence < 0.60,
+                'source' => 'fallback',
+            ];
+        }
+
+        return [
+            'recommended_department_id' => null,
+            'recommended_department_name' => null,
+            'confidence' => 0.0,
+            'explanation' => 'No specific operational department could be confidently matched. Please select the appropriate department manually.',
+            'requires_manual_selection' => true,
+            'source' => 'fallback',
+        ];
+    }
 }

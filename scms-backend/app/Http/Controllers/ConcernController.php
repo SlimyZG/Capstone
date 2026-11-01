@@ -10,10 +10,60 @@ use Illuminate\Http\Request;
 class ConcernController extends Controller
 {
     /**
+     * Generate an AI-assisted routing recommendation for a non-academic concern.
+     * Recommends an operational department from the database based on concern title and description.
+     */
+    public function recommendRouting(Request $request)
+    {
+        $validated = $request->validate([
+            'title' => 'required|string|max:255',
+            'description' => 'required|string|max:10000',
+        ]);
+
+        $departments = \App\Models\Department::all();
+        if ($departments->isEmpty()) {
+            return response()->json([
+                'recommended_department_id' => null,
+                'recommended_department_name' => null,
+                'confidence' => 0.0,
+                'explanation' => 'No operational departments found in the system. Please select a department manually.',
+                'requires_manual_selection' => true,
+                'source' => 'fallback',
+            ]);
+        }
+
+        $recommendation = null;
+
+        // 1. Attempt recommendation via Gemini AI service
+        try {
+            $geminiService = app(\App\Services\GeminiSentimentService::class);
+            $recommendation = $geminiService->recommendOperationalDepartment(
+                $validated['title'],
+                $validated['description'],
+                $departments
+            );
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Gemini routing recommendation error: ' . $e->getMessage());
+        }
+
+        // 2. Safe local fallback if Gemini is unavailable, returns null, or fails
+        if (!$recommendation) {
+            $localService = app(\App\Services\LocalSentimentService::class);
+            $recommendation = $localService->recommendOperationalDepartment(
+                $validated['title'],
+                $validated['description'],
+                $departments
+            );
+        }
+
+        return response()->json($recommendation);
+    }
+
+    /**
      * Submit a new concern (student only).
      *
      * Workflows supported:
-     * - workflow_type='academic': Routed to Computer Studies (CCS) chairperson / dept staff review.
+     * - workflow_type='academic': Routed to the student's registered academic unit chairperson / dean.
      * - workflow_type='non_academic': Routed to the selected operational/administrative department staff.
      */
     public function store(Request $request)
@@ -25,7 +75,6 @@ class ConcernController extends Controller
             'category' => 'nullable|in:academic_units,operational_departments',
             'target_type' => 'nullable|in:department,dean',
             'dept_id' => 'required_if:workflow_type,non_academic|nullable|exists:departments,id',
-            'academic_unit_id' => 'nullable|exists:academic_units,id',
             'is_anonymous' => 'boolean',
             'attachments.*' => 'nullable|file|mimes:jpeg,png,jpg,pdf,doc,docx|max:5120',
         ]);
@@ -35,18 +84,31 @@ class ConcernController extends Controller
 
         // Determine routing target based on workflow type
         if ($workflowType === 'academic') {
-            // Find Computer Studies academic unit (ID 3 or lookup by name)
-            $ccsUnit = \App\Models\AcademicUnit::where('name', 'like', '%Computer%')->first();
-            $academicUnitId = $ccsUnit ? $ccsUnit->id : ($user->academic_unit_id ?? 3);
+            // Academic concerns must ALWAYS use the authenticated student's registered academic unit.
+            if (empty($user->academic_unit_id) || !\App\Models\AcademicUnit::where('id', $user->academic_unit_id)->exists()) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    'academic_unit' => ['You do not have a registered academic unit on file. Academic concerns cannot be submitted without an assigned academic unit.'],
+                ]);
+            }
+
+            // Strictly bind to the authenticated student's registered academic unit
+            // Any client-submitted academic_unit_id is intentionally ignored to prevent manipulation
+            $academicUnitId = (int) $user->academic_unit_id;
             $deptId = null;
             $category = 'academic_units';
             $targetType = 'department';
+
+            $assignedUnit = \App\Models\AcademicUnit::find($academicUnitId);
+            $deptOrUnitName = ($assignedUnit ? $assignedUnit->name : 'Academic Unit') . ' Chairperson & Dean Review';
         } else {
             // For non-academic concerns, link to the student's academic unit to satisfy NOT NULL foreign key constraint
-            $academicUnitId = $user->academic_unit_id ?? \App\Models\AcademicUnit::first()?->id ?? 3;
-            $deptId = $validated['dept_id'];
+            $academicUnitId = $user->academic_unit_id ?? \App\Models\AcademicUnit::first()?->id ?? 1;
+            $deptId = (int) $validated['dept_id'];
             $category = 'operational_departments';
             $targetType = 'department';
+
+            $assignedDept = \App\Models\Department::findOrFail($deptId);
+            $deptOrUnitName = $assignedDept->name;
         }
 
         $concern = Concern::create([
@@ -75,7 +137,6 @@ class ConcernController extends Controller
 
         // Create initial routing entry with precise initial action label
         $action = $workflowType === 'academic' ? 'submitted_academic' : 'submitted_non_academic';
-        $deptOrUnitName = $workflowType === 'academic' ? 'Computer Studies Department' : optional(\App\Models\Department::find($deptId))->name;
         
         ConcernRouting::create([
             'concern_id' => $concern->concern_id,
@@ -248,13 +309,17 @@ class ConcernController extends Controller
         $workflowType = $validated['workflow_type'] ?? $concern->workflow_type ?? 'non_academic';
 
         if ($workflowType === 'academic') {
-            $ccsUnit = \App\Models\AcademicUnit::where('name', 'like', '%Computer%')->first();
-            $academicUnitId = $ccsUnit ? $ccsUnit->id : ($user->academic_unit_id ?? 3);
+            if (empty($user->academic_unit_id) || !\App\Models\AcademicUnit::where('id', $user->academic_unit_id)->exists()) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    'academic_unit' => ['You do not have a registered academic unit on file. Academic concerns cannot be submitted without an assigned academic unit.'],
+                ]);
+            }
+            $academicUnitId = (int) $user->academic_unit_id;
             $deptId = null;
             $category = 'academic_units';
             $targetType = 'department';
         } else {
-            $academicUnitId = null;
+            $academicUnitId = $concern->academic_unit_id ?? ($user->academic_unit_id ?? \App\Models\AcademicUnit::first()?->id ?? 1);
             $deptId = $validated['dept_id'] ?? $concern->dept_id;
             $category = 'operational_departments';
             $targetType = 'department';

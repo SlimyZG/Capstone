@@ -387,4 +387,142 @@ PROMPT;
             return null;
         }
     }
+
+    /**
+     * Recommend an operational department using Gemini for non-academic concerns.
+     *
+     * @param  string  $title
+     * @param  string  $description
+     * @param  \Illuminate\Support\Collection|array  $departments
+     * @return array{
+     *     recommended_department_id: int,
+     *     recommended_department_name: string,
+     *     confidence: float,
+     *     explanation: string,
+     *     requires_manual_selection: bool,
+     *     source: string
+     * }|null
+     */
+    public function recommendOperationalDepartment(string $title, string $description, $departments): ?array
+    {
+        $apiKey = config('services.gemini.api_key', '');
+        $model  = config('services.gemini.model', 'gemini-3.5-flash');
+        $timeout = (int) config('services.gemini.timeout', 20);
+
+        if (empty($apiKey)) {
+            Log::debug('GeminiSentimentService: API key not configured, skipping routing recommendation.');
+            return null;
+        }
+
+        $endpoint = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent";
+
+        $deptList = [];
+        foreach ($departments as $dept) {
+            $deptList[] = [
+                'id' => (int) $dept->id,
+                'name' => $dept->name,
+            ];
+        }
+
+        if (empty($deptList)) {
+            return null;
+        }
+
+        $deptJson = json_encode($deptList, JSON_PRETTY_PRINT);
+
+        $prompt = <<<PROMPT
+You are an intelligent concern routing engine for a university management system.
+A student is submitting a non-academic concern.
+
+Available operational departments:
+{$deptJson}
+
+Student Concern:
+Title: {$title}
+Description: {$description}
+
+Task:
+Analyze the concern title and description. Recommend the single most appropriate operational department from the available list above.
+Rules:
+1. ONLY select a department that exists in the available list above with its exact ID and Name. Never invent a department.
+2. Provide a confidence score between 0.0 (uncertain) and 1.0 (highly confident).
+3. If the concern does not clearly match any operational department or confidence is low, set confidence below 0.50.
+4. Provide a 1-2 sentence factual explanation for your recommendation.
+
+Return ONLY a JSON object:
+{
+  "department_id": <int>,
+  "department_name": "<string>",
+  "confidence": <float>,
+  "explanation": "<string>"
+}
+PROMPT;
+
+        $payload = [
+            'contents' => [
+                ['parts' => [['text' => $prompt]]],
+            ],
+            'generationConfig' => [
+                'temperature' => 0.1,
+                'responseMimeType' => 'application/json',
+            ],
+        ];
+
+        try {
+            $response = Http::withHeaders([
+                'x-goog-api-key' => $apiKey,
+                'Content-Type'   => 'application/json',
+            ])->timeout($timeout)->post($endpoint, $payload);
+
+            if (!$response->successful()) {
+                Log::warning('Gemini recommendOperationalDepartment API returned HTTP ' . $response->status());
+                return null;
+            }
+
+            $body = $response->json();
+            $text = $body['candidates'][0]['content']['parts'][0]['text'] ?? null;
+            if (!$text) {
+                return null;
+            }
+
+            $decoded = json_decode(trim($text), true);
+            if (!is_array($decoded) || !isset($decoded['department_id'])) {
+                return null;
+            }
+
+            $deptId = (int) $decoded['department_id'];
+            $confidence = isset($decoded['confidence']) && is_numeric($decoded['confidence'])
+                ? (float) $decoded['confidence']
+                : 0.5;
+            $confidence = max(0.0, min(1.0, round($confidence, 2)));
+            $explanation = !empty($decoded['explanation']) && is_string($decoded['explanation'])
+                ? trim($decoded['explanation'])
+                : 'Recommended based on concern content.';
+
+            // Validate against actual departments collection
+            $matched = collect($departments)->firstWhere('id', $deptId);
+            if (!$matched && !empty($decoded['department_name'])) {
+                $matched = collect($departments)->first(function ($d) use ($decoded) {
+                    return strcasecmp($d->name, trim($decoded['department_name'])) === 0;
+                });
+            }
+
+            if (!$matched) {
+                Log::warning('Gemini recommended non-existent department ID ' . $deptId);
+                return null;
+            }
+
+            return [
+                'recommended_department_id' => $matched->id,
+                'recommended_department_name' => $matched->name,
+                'confidence' => $confidence,
+                'explanation' => $explanation,
+                'requires_manual_selection' => $confidence < 0.60,
+                'source' => 'gemini',
+            ];
+        } catch (\Throwable $e) {
+            Log::warning('Gemini recommendOperationalDepartment failed: ' . $e->getMessage());
+            return null;
+        }
+    }
 }
