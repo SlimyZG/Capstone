@@ -475,6 +475,10 @@ class ConcernController extends Controller
             'is_priority_overridden',
             'recurring_incident_id',
             'critical_notified_at',
+            'cad_signed_document_path',
+            'cad_department_notes',
+            'cad_submission_notes',
+            'cad_decision_notes',
         ]);
 
         $concern->prediction = app(\App\Services\ResolutionPredictionService::class)->predictForStudent($concern);

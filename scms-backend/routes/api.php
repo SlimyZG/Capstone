@@ -57,6 +57,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/oversight', [\App\Http\Controllers\SaoOversightController::class, 'getOversight']);
         Route::get('/assigned-concerns', [\App\Http\Controllers\SaoOversightController::class, 'assignedConcerns']);
         Route::get('/concerns/{id}', [\App\Http\Controllers\SaoOversightController::class, 'showConcern']);
+        Route::get('/concerns/{id}/cad/signed-document', [\App\Http\Controllers\SaoOversightController::class, 'downloadCadSignedDocument']);
         Route::post('/concerns/{id}/priority-override', [\App\Http\Controllers\SaoOversightController::class, 'priorityOverride']);
         Route::post('/concerns/{id}/reply', [\App\Http\Controllers\SaoOversightController::class, 'reply']);
         Route::get('/recurring-incidents', [RecurringIncidentController::class, 'saoIndex']);
@@ -87,6 +88,12 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/concerns/{id}/status', [DeptStaffController::class, 'updateStatus']);
         Route::post('/concerns/{id}/escalate', [DeptStaffController::class, 'escalate']);
         Route::post('/concerns/{id}/forward-cad', [DeptStaffController::class, 'forwardToCad']);
+        Route::post('/concerns/{id}/cad/initiate', [DeptStaffController::class, 'generateCadDocument']);
+        Route::post('/concerns/{id}/cad/generate-document', [DeptStaffController::class, 'generateCadDocument']);
+        Route::get('/concerns/{id}/cad/document', [DeptStaffController::class, 'getCadDocument']);
+        Route::post('/concerns/{id}/cad/record-submission', [DeptStaffController::class, 'recordCadSubmission']);
+        Route::post('/concerns/{id}/cad/upload-decision', [DeptStaffController::class, 'uploadCadDecision']);
+        Route::get('/concerns/{id}/cad/signed-document', [DeptStaffController::class, 'downloadCadSignedDocument']);
         Route::get('/concerns/{id}/messages', [DeptStaffController::class, 'getMessages']);
         // Reports
         Route::get('/reports', [DeptStaffController::class, 'getReport']);

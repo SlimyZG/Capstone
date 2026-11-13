@@ -6,7 +6,10 @@ use App\Models\Concern;
 use App\Models\ConcernRouting;
 use App\Models\Message;
 use App\Models\User;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 
 class DeptStaffController extends Controller
 {
@@ -304,66 +307,14 @@ class DeptStaffController extends Controller
     }
 
     /**
-     * Forward Non-Academic concern to CAD (Campus Administrator / Administration) for approval.
+     * Legacy forward Non-Academic concern to CAD.
+     * Direct automated forwarding has been disabled in favor of the conditional physical document workflow.
      */
     public function forwardToCad(Request $request, int $id)
     {
-        $user = $request->user();
-
-        $query = Concern::where('concern_id', $id);
-        $this->scopeForStaff($query, $user);
-        $concern = $query->whereIn('status', ['pending', 'in_progress', 'returned'])->firstOrFail();
-
-        $validated = $request->validate([
-            'notes' => 'nullable|string',
-        ]);
-
-        $concern->update([
-            'status' => 'escalated',
-            'forwarded_to_cad_at' => now(),
-            'last_updated' => now(),
-        ]);
-
-        ConcernRouting::create([
-            'concern_id' => $concern->concern_id,
-            'action' => 'forwarded_to_cad',
-            'performed_by' => $user->id,
-            'notes' => $validated['notes'] ?? 'Forwarded to CAD (Campus Administration) for approval.',
-        ]);
-
-        // Notify Dean / CAD Administration and Student
-        try {
-            // Find executive / administration users (deans who oversee CAD or all deans)
-            $cadUsers = \App\Models\User::where('role', 'dean')->get();
-            foreach ($cadUsers as $cadUser) {
-                $cadUser->notify(new \App\Notifications\ConcernWorkflowNotification(
-                    $concern->concern_id,
-                    'Non-Academic Concern Forwarded to CAD',
-                    "Non-academic concern '{$concern->title}' has been forwarded for Campus Administration approval.",
-                    'forwarded_to_cad',
-                    $concern->workflow_type ?? 'non_academic',
-                    "/dean/concerns/{$concern->concern_id}"
-                ));
-            }
-
-            if ($concern->student) {
-                $concern->student->notify(new \App\Notifications\ConcernWorkflowNotification(
-                    $concern->concern_id,
-                    'Concern Forwarded to Campus Administration',
-                    "Your non-academic concern '{$concern->title}' has been forwarded to CAD for administrative approval.",
-                    'forwarded_to_cad',
-                    $concern->workflow_type ?? 'non_academic',
-                    "/student/concerns/{$concern->concern_id}"
-                ));
-            }
-        } catch (\Throwable $ne) {
-            \Illuminate\Support\Facades\Log::warning('Failed sending CAD notification: ' . $ne->getMessage());
-        }
-
         return response()->json([
-            'message' => 'Concern forwarded to CAD for approval.',
-            'concern' => $concern->fresh(['academicUnit', 'department']),
-        ]);
+            'message' => 'Direct automated forwarding to CAD is disabled. Non-academic concerns requiring CAD approval must use the conditional physical document workflow (generate document, record physical submission, and upload signed determination).',
+        ], 410);
     }
 
     /**
@@ -462,6 +413,8 @@ class DeptStaffController extends Controller
         $concern = $query->with([
             'academicUnit',
             'department',
+            'cadSubmittedBy:id,name,email',
+            'cadDecisionBy:id,name,email',
             'routingHistory.performer',
             'messages.sender',
             'student' => function ($q) {
@@ -1030,5 +983,359 @@ class DeptStaffController extends Controller
         };
 
         return response()->stream($callback, 200, $headers);
+    }
+
+    /**
+     * Generate or initiate CAD approval document for non-academic concern.
+     */
+    public function generateCadDocument(Request $request, int $id)
+    {
+        $user = $request->user();
+
+        $query = Concern::where('concern_id', $id);
+        $this->scopeForStaff($query, $user);
+        $concern = $query->firstOrFail();
+
+        // CAD approval workflow strictly applies to non-academic / operational concerns
+        if ($concern->workflow_type === 'academic' || $concern->category === 'academic_units') {
+            return response()->json([
+                'message' => 'CAD approval workflow applies only to operational and non-academic concerns.',
+            ], 422);
+        }
+
+        $validated = $request->validate([
+            'department_notes' => 'nullable|string|max:2000',
+        ]);
+
+        if ($closed = $this->cadClosedResponse($concern)) {
+            return $closed;
+        }
+        if ($concern->cad_status === 'approved') {
+            return response()->json([
+                'message' => 'CAD approval has already been recorded for this concern.',
+            ], 409);
+        }
+
+        $deptNotes = $validated['department_notes'] ?? $concern->cad_department_notes;
+
+        $update = [
+            'cad_status' => $concern->cad_status ?: 'awaiting_submission',
+            'cad_document_generated_at' => now(),
+            'cad_department_notes' => $deptNotes,
+            'last_updated' => now(),
+        ];
+
+        // Re-generating after a rejected / returned decision starts a fresh physical round.
+        // Earlier decisions stay in the audit history (concern_routing).
+        if (in_array($concern->cad_status, ['rejected', 'returned'], true)) {
+            $update = array_merge($update, [
+                'cad_status' => 'awaiting_submission',
+                'cad_submitted_at' => null,
+                'cad_submitted_by' => null,
+                'cad_submission_notes' => null,
+                'cad_decision' => null,
+                'cad_decision_at' => null,
+                'cad_decision_by' => null,
+                'cad_decision_notes' => null,
+            ]);
+        }
+
+        $concern->update($update);
+
+        ConcernRouting::create([
+            'concern_id' => $concern->concern_id,
+            'action' => 'cad_document_generated',
+            'performed_by' => $user->id,
+            'notes' => 'Generated official CAD approval request document.' . (!empty($deptNotes) ? ' Department Assessment: ' . $deptNotes : ''),
+        ]);
+
+        $freshConcern = $concern->fresh(['student.academicUnit', 'department', 'cadSubmittedBy', 'cadDecisionBy']);
+
+        return response()->json([
+            'message' => 'CAD approval document generated successfully.',
+            'concern' => $freshConcern,
+            'document_data' => $this->buildCadDocumentPayload($freshConcern, $user),
+        ]);
+    }
+
+    /**
+     * Get document metadata and printable structure for CAD Approval.
+     */
+    public function getCadDocument(Request $request, int $id)
+    {
+        $user = $request->user();
+
+        $query = Concern::where('concern_id', $id);
+        $this->scopeForStaff($query, $user);
+        $concern = $query->with(['student.academicUnit', 'department', 'cadSubmittedBy', 'cadDecisionBy'])->firstOrFail();
+
+        if ($concern->workflow_type === 'academic' || $concern->category === 'academic_units') {
+            return response()->json([
+                'message' => 'CAD approval workflow applies only to operational and non-academic concerns.',
+            ], 422);
+        }
+
+        return response()->json([
+            'document_data' => $this->buildCadDocumentPayload($concern, $user),
+        ]);
+    }
+
+    /**
+     * Record physical submission of document to CAD.
+     */
+    public function recordCadSubmission(Request $request, int $id)
+    {
+        $user = $request->user();
+
+        $query = Concern::where('concern_id', $id);
+        $this->scopeForStaff($query, $user);
+        $concern = $query->firstOrFail();
+
+        if ($concern->workflow_type === 'academic' || $concern->category === 'academic_units') {
+            return response()->json([
+                'message' => 'CAD approval workflow applies only to operational and non-academic concerns.',
+            ], 422);
+        }
+
+        if ($closed = $this->cadClosedResponse($concern)) {
+            return $closed;
+        }
+        if ($concern->cad_status !== 'awaiting_submission') {
+            return response()->json([
+                'message' => 'A CAD approval document must be generated before physical submission can be recorded.',
+            ], 409);
+        }
+
+        $validated = $request->validate([
+            'submission_notes' => 'nullable|string|max:1000',
+        ]);
+
+        $notes = $validated['submission_notes'] ?? 'Document physically submitted to Campus Administrator for review.';
+
+        $concern->update([
+            'cad_status' => 'awaiting_decision',
+            'cad_submitted_at' => now(),
+            'cad_submitted_by' => $user->id,
+            'cad_submission_notes' => $notes,
+            'status' => 'in_progress',
+            'last_updated' => now(),
+        ]);
+
+        ConcernRouting::create([
+            'concern_id' => $concern->concern_id,
+            'action' => 'cad_submitted_physically',
+            'performed_by' => $user->id,
+            'notes' => $notes,
+        ]);
+
+        // In-app notification to student
+        try {
+            if ($concern->student) {
+                $concern->student->notify(new \App\Notifications\ConcernWorkflowNotification(
+                    $concern->concern_id,
+                    'Endorsed to Campus Administration',
+                    "Your concern '{$concern->title}' has been submitted to the Campus Administrator's Office (CAD) for administrative approval.",
+                    'cad_submitted',
+                    'non_academic',
+                    "/student/concerns/{$concern->concern_id}"
+                ));
+            }
+        } catch (\Throwable $ne) {
+            Log::warning('Failed sending student CAD submission notification: ' . $ne->getMessage());
+        }
+
+        return response()->json([
+            'message' => 'Physical submission to CAD recorded successfully.',
+            'concern' => $concern->fresh(['academicUnit', 'department', 'cadSubmittedBy', 'cadDecisionBy']),
+        ]);
+    }
+
+    /**
+     * Upload signed CAD document and record physical decision (Approved, Rejected, Returned).
+     */
+    public function uploadCadDecision(Request $request, int $id)
+    {
+        $user = $request->user();
+
+        $query = Concern::where('concern_id', $id);
+        $this->scopeForStaff($query, $user);
+        $concern = $query->firstOrFail();
+
+        if ($concern->workflow_type === 'academic' || $concern->category === 'academic_units') {
+            return response()->json([
+                'message' => 'CAD approval workflow applies only to operational and non-academic concerns.',
+            ], 422);
+        }
+
+        if ($closed = $this->cadClosedResponse($concern)) {
+            return $closed;
+        }
+        if ($concern->cad_status !== 'awaiting_decision') {
+            return response()->json([
+                'message' => 'A CAD decision can only be recorded after the document has been physically submitted.',
+            ], 409);
+        }
+
+        $validated = $request->validate([
+            'decision' => 'required|in:approved,rejected,returned',
+            'signed_document' => 'required|file|mimes:pdf,jpg,jpeg,png|max:10240',
+            'decision_notes' => 'nullable|string|max:2000',
+            'decision_date' => 'nullable|date',
+        ]);
+
+        $diskName = config('filesystems.cad_disk', 'local');
+        $file = $request->file('signed_document');
+        $filename = 'cad_doc_' . $concern->concern_id . '_' . time() . '.' . $file->getClientOriginalExtension();
+        $path = $file->storeAs("cad_documents/{$concern->concern_id}", $filename, $diskName);
+
+        $decision = $validated['decision'];
+        $decisionDate = !empty($validated['decision_date']) ? Carbon::parse($validated['decision_date']) : now();
+        $notes = $validated['decision_notes'] ?? null;
+
+        // CAD approval alone does NOT auto-resolve; concern remains in_progress for department staff to finalize.
+        // Rejected or returned leaves concern open for departmental handling/revision.
+        $newStatus = ($decision === 'returned') ? 'returned' : 'in_progress';
+
+        $concern->update([
+            'cad_status' => $decision,
+            'cad_decision' => $decision,
+            'cad_decision_at' => $decisionDate,
+            'cad_decision_by' => $user->id,
+            'cad_decision_notes' => $notes,
+            'cad_signed_document_path' => $path,
+            'status' => $newStatus,
+            'last_updated' => now(),
+        ]);
+
+        ConcernRouting::create([
+            'concern_id' => $concern->concern_id,
+            'action' => 'cad_' . $decision,
+            'performed_by' => $user->id,
+            'notes' => "CAD Physical Decision: " . strtoupper($decision) . ". Signed document uploaded by " . $user->name . "." . (!empty($notes) ? " Directives/Notes: {$notes}" : ""),
+        ]);
+
+        // Student Notification
+        try {
+            if ($concern->student) {
+                $notificationTitles = [
+                    'approved' => 'Administrative Approval Granted',
+                    'rejected' => 'Campus Administration Decision Recorded',
+                    'returned' => 'Concern Returned for Revision',
+                ];
+                $notificationMessages = [
+                    'approved' => "Campus Administration has approved the administrative action for '{$concern->title}'. The department will proceed with implementation.",
+                    'rejected' => "Campus Administration has reviewed '{$concern->title}' and rendered a determination. Department staff is assessing next steps.",
+                    'returned' => "Your concern '{$concern->title}' has been returned by Campus Administration for additional departmental information.",
+                ];
+
+                $concern->student->notify(new \App\Notifications\ConcernWorkflowNotification(
+                    $concern->concern_id,
+                    $notificationTitles[$decision],
+                    $notificationMessages[$decision],
+                    'cad_' . $decision,
+                    'non_academic',
+                    "/student/concerns/{$concern->concern_id}"
+                ));
+            }
+        } catch (\Throwable $ne) {
+            Log::warning('Failed sending student CAD decision notification: ' . $ne->getMessage());
+        }
+
+        return response()->json([
+            'message' => "CAD decision '{$decision}' and signed document recorded successfully.",
+            'concern' => $concern->fresh(['academicUnit', 'department', 'cadSubmittedBy', 'cadDecisionBy']),
+        ]);
+    }
+
+    /**
+     * Download or stream the signed CAD document securely.
+     * Accessible by authorized department staff only.
+     */
+    public function downloadCadSignedDocument(Request $request, int $id)
+    {
+        $user = $request->user();
+
+        // Scope to staff department
+        $query = Concern::where('concern_id', $id);
+        $this->scopeForStaff($query, $user);
+        $concern = $query->firstOrFail();
+
+        $diskName = config('filesystems.cad_disk', 'local');
+        $disk = Storage::disk($diskName);
+        if (empty($concern->cad_signed_document_path) || !$disk->exists($concern->cad_signed_document_path)) {
+            return response()->json(['message' => 'Signed CAD document not found.'], 404);
+        }
+
+        $extension = pathinfo($concern->cad_signed_document_path, PATHINFO_EXTENSION) ?: 'pdf';
+        $filename = 'CAD_Signed_Document_' . $concern->concern_id . '.' . $extension;
+
+        return $disk->response($concern->cad_signed_document_path, $filename, [
+            'Cache-Control' => 'private, no-cache, no-store, must-revalidate',
+        ], 'inline');
+    }
+
+    /**
+     * CAD actions must never touch a concern that is already closed out.
+     */
+    private function cadClosedResponse(Concern $concern)
+    {
+        if (in_array($concern->status, ['resolved', 'closed', 'withdrawn'], true)) {
+            return response()->json([
+                'message' => 'This concern is already ' . $concern->status . '; CAD actions are no longer available.',
+            ], 409);
+        }
+
+        return null;
+    }
+
+    /**
+     * Build structured printable CAD document payload.
+     */
+    private function buildCadDocumentPayload(Concern $concern, User $currentUser): array
+    {
+        $student = $concern->student;
+        $yearLevel = $student?->year_level ? "Year " . $student->year_level : "Undergraduate";
+        $program = $student?->academicUnit?->name ?? 'General Studies';
+
+        $studentInfo = [
+            'name' => $concern->is_anonymous ? 'CONFIDENTIAL (Identity Masked)' : ($student?->name ?? 'N/A'),
+            'student_id' => $concern->is_anonymous ? '********' : ($student?->student_id_number ?? 'N/A'),
+            'program_unit' => $concern->is_anonymous ? 'Protected Program' : "{$program} ({$yearLevel})",
+            'is_anonymous' => (bool) $concern->is_anonymous,
+        ];
+
+        return [
+            'institution' => [
+                'name' => 'UNIVERSITY OF CEBU - LAPU-LAPU AND MANDAUE',
+                'campus' => 'Student Concern Management System (SCMS) — Generated Record',
+                'office' => "CAMPUS ADMINISTRATOR'S OFFICE (CAD)",
+                'form_title' => 'SCMS Administrative Approval Request',
+                'provisional_notice' => 'Provisional SCMS-generated routing document pending institutional template confirmation.',
+            ],
+            'reference_number' => 'REQ-' . date('Y', strtotime($concern->submitted_at ?: 'now')) . '-' . str_pad($concern->concern_id, 4, '0', STR_PAD_LEFT),
+            'generated_at' => $concern->cad_document_generated_at ? $concern->cad_document_generated_at->toIso8601String() : now()->toIso8601String(),
+            'generated_by_staff' => [
+                'id' => $currentUser->id,
+                'name' => $currentUser->name,
+                'department' => $concern->department?->name ?? 'Department Staff',
+            ],
+            'student' => $studentInfo,
+            'concern' => [
+                'concern_id' => $concern->concern_id,
+                'title' => $concern->title,
+                'description' => $concern->description,
+                'category' => $concern->issue_category ?? $concern->category ?? 'Operational Department',
+                'subcategory' => $concern->issue_subcategory ?? 'General Concern',
+                'priority' => $concern->priority,
+                'ai_priority' => $concern->ai_priority,
+                'priority_label' => ucfirst($concern->priority ?? 'normal') . ($concern->ai_priority ? " (AI Recommendation: " . ucfirst($concern->ai_priority) . " - Staff Confirmed)" : " (Staff Confirmed)"),
+                'submitted_at' => $concern->submitted_at ? $concern->submitted_at->toIso8601String() : null,
+                'department_name' => $concern->department?->name ?? 'Operational Department',
+            ],
+            'department_assessment' => $concern->cad_department_notes ?? 'Administrative approval requested for urgent/critical campus action.',
+            'cad_status' => $concern->cad_status ?? 'awaiting_submission',
+            'cad_decision' => $concern->cad_decision,
+            'cad_decision_notes' => $concern->cad_decision_notes,
+        ];
     }
 }

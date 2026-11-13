@@ -243,120 +243,127 @@ const StudentConcernDetails = () => {
    */
   const buildNonAcademicTimeline = () => {
     const submissionRecord = findAction(['submitted_non_academic', 'routed_to_dept']) || { created_at: concern.submitted_at };
-    const deptReviewRecord = findAction(['status_changed', 'forwarded_to_cad', 'escalated_to_dean', 'resolved']);
-    const cadForwardRecord = findAction(['forwarded_to_cad', 'escalated_to_dean']);
-    const cadApprovalRecord = findAction(['cad_approved', 'approved']);
-    const cadReturnedRecord = findAction(['cad_returned', 'returned']);
+    const deptReviewRecord = findAction(['status_changed', 'cad_document_generated', 'cad_submitted_physically', 'forwarded_to_cad', 'resolved']);
+    const cadGenRecord = findAction(['cad_document_generated']);
+    const cadSubmitRecord = findAction(['cad_submitted_physically', 'forwarded_to_cad']);
+    const cadDecisionRecord = findAction(['cad_approved', 'cad_rejected', 'cad_returned', 'approved', 'returned']);
     const resolvedRecord = findAction(['resolved']) || (concern.status === 'resolved' ? { created_at: concern.resolved_at } : null);
 
-    // Stage 2: Selected Department Review
-    let stage2Status = 'upcoming';
-    let stage2Date = null;
-    let stage2Notes = null;
-    if (cadForwardRecord || resolvedRecord) {
-      stage2Status = 'completed';
-      stage2Date = deptReviewRecord?.created_at || cadForwardRecord?.created_at;
-      stage2Notes = 'Department review completed.';
-    } else if (concern.status === 'returned' || cadReturnedRecord) {
-      stage2Status = 'current';
-      stage2Date = cadReturnedRecord?.created_at || concern.last_updated;
-      stage2Notes = `Returned by CAD: ${cadReturnedRecord?.notes || 'Needs further revision/action by department.'}`;
-    } else if (concern.status === 'in_progress' || deptReviewRecord) {
-      stage2Status = 'current';
-      stage2Date = deptReviewRecord?.created_at || concern.last_updated;
-      stage2Notes = deptReviewRecord?.notes || 'Currently being processed by department staff.';
-    } else if (concern.status === 'pending') {
-      stage2Status = 'current';
-      stage2Notes = `Awaiting initial review by ${departmentName || 'Department'}.`;
+    const hasCadWorkflow = Boolean(
+      concern.cad_status ||
+      concern.forwarded_to_cad_at ||
+      cadGenRecord ||
+      cadSubmitRecord ||
+      cadDecisionRecord
+    );
+
+    if (!hasCadWorkflow) {
+      // ── Routine 3-Stage Non-Academic Workflow ──
+      const isResolved = concern.status === 'resolved';
+      const isInProgress = concern.status === 'in_progress' || Boolean(deptReviewRecord);
+
+      return [
+        {
+          id: 1,
+          title: 'Concern Submitted',
+          description: `Submitted and routed to ${departmentName || 'Department'}`,
+          status: 'completed',
+          date: submissionRecord?.created_at,
+          notes: 'Concern successfully received by the assigned department.',
+        },
+        {
+          id: 2,
+          title: 'Under Department Review',
+          description: `Direct processing by ${departmentName || 'department'} staff`,
+          status: isResolved ? 'completed' : (isInProgress ? 'current' : 'current'),
+          date: deptReviewRecord?.created_at || (isInProgress ? concern.last_updated : null),
+          notes: isResolved
+            ? 'Department review and implementation completed.'
+            : (isInProgress
+                ? 'Department staff is actively working on resolving this concern.'
+                : `Awaiting initial review by ${departmentName || 'the assigned department'}.`),
+        },
+        {
+          id: 3,
+          title: 'Concern Resolved',
+          description: 'Official resolution completed by department staff',
+          status: isResolved ? 'completed' : 'upcoming',
+          date: resolvedRecord?.created_at || concern.resolved_at,
+          notes: isResolved ? 'This concern has been officially addressed and closed.' : null,
+        },
+      ];
     }
 
-    // Stage 3: Forward to CAD for Approval
-    let stage3Status = 'upcoming';
-    let stage3Date = null;
-    let stage3Notes = null;
-    if (cadForwardRecord) {
-      stage3Status = 'completed';
-      stage3Date = cadForwardRecord.created_at || concern.forwarded_to_cad_at;
-      stage3Notes = cadForwardRecord.notes || 'Forwarded to CAD (Campus Administration) for approval.';
-    } else if (stage2Status === 'completed' && !cadForwardRecord && !resolvedRecord) {
-      stage3Status = 'current';
-    }
+    // ── Conditional CAD Approval Workflow (6 Stages) ──
+    const isStage2Completed = Boolean(cadGenRecord || cadSubmitRecord || cadDecisionRecord || concern.cad_document_generated_at);
+    const isStage3Completed = Boolean(cadSubmitRecord || concern.cad_submitted_at || cadDecisionRecord || concern.cad_decision_at);
+    const isStage3Current = (concern.cad_status === 'awaiting_submission' || Boolean(cadGenRecord)) && !isStage3Completed;
+    const isStage4Completed = Boolean(cadDecisionRecord || concern.cad_decision || concern.cad_decision_at);
+    const isStage4Current = (concern.cad_status === 'awaiting_decision' || Boolean(cadSubmitRecord)) && !isStage4Completed;
+    const isStage5Completed = Boolean(cadDecisionRecord || concern.cad_decision || concern.cad_decision_at);
+    const isResolved = concern.status === 'resolved';
 
-    // Stage 4: CAD Approval / Return
-    let stage4Status = 'upcoming';
-    let stage4Date = null;
-    let stage4Notes = null;
-    let stage4Title = 'CAD Approval';
-    let stage4Desc = 'Review and approval by Campus Administration';
-
-    if (cadApprovalRecord) {
-      stage4Status = 'completed';
-      stage4Date = cadApprovalRecord.created_at;
-      stage4Notes = cadApprovalRecord.notes || 'Approved by Campus Administration.';
-    } else if (concern.status === 'returned' && cadReturnedRecord) {
-      stage4Status = 'completed';
-      stage4Title = 'Returned by CAD';
-      stage4Desc = 'Returned to department for revision / clarification';
-      stage4Date = cadReturnedRecord.created_at;
-      stage4Notes = cadReturnedRecord.notes;
-    } else if (cadForwardRecord && concern.status === 'escalated') {
-      stage4Status = 'current';
-      stage4Notes = 'Under review by Campus Administrator.';
-    }
-
-    // Stage 5: Resolution / Closure
-    let stage5Status = 'upcoming';
-    let stage5Date = null;
-    let stage5Notes = null;
-    if (concern.status === 'resolved') {
-      stage5Status = 'completed';
-      stage5Date = resolvedRecord?.created_at || concern.resolved_at;
-      stage5Notes = resolvedRecord?.notes || 'Concern has been resolved and closed.';
-    } else if (stage4Status === 'completed' && concern.status === 'approved') {
-      stage5Status = 'current';
-      stage5Notes = 'Awaiting final department execution & closure.';
+    let stage5Title = 'Administrative Decision Received';
+    let stage5Desc = 'Formal determination rendered by Campus Administrator';
+    let stage5Notes = 'Administrative approval granted. Department proceeding with implementation.';
+    if (concern.cad_status === 'returned' || concern.cad_decision === 'returned') {
+      stage5Title = 'Returned for Department Revision';
+      stage5Desc = 'Referred back to department for additional administrative details';
+      stage5Notes = 'Referred back to the department for assessment revision.';
+    } else if (concern.cad_status === 'rejected' || concern.cad_decision === 'rejected') {
+      stage5Title = 'Administrative Determination Recorded';
+      stage5Desc = 'Campus Administration has rendered a formal response';
+      stage5Notes = 'Campus Administration determination recorded. Department assessing next steps.';
     }
 
     return [
       {
         id: 1,
-        title: 'Student Submission',
+        title: 'Concern Submitted',
         description: `Submitted and routed to ${departmentName || 'Department'}`,
         status: 'completed',
         date: submissionRecord?.created_at,
-        notes: submissionRecord?.notes,
+        notes: 'Concern successfully received by the assigned department.',
       },
       {
         id: 2,
-        title: `${departmentName || 'Department'} Review`,
-        description: 'Staff inspection and initial action',
-        status: stage2Status,
-        date: stage2Date,
-        notes: stage2Notes,
+        title: 'Department Assessment',
+        description: 'Staff evaluated request and identified administrative approval requirement',
+        status: isStage2Completed ? 'completed' : 'current',
+        date: deptReviewRecord?.created_at,
+        notes: 'Department staff determined that Campus Administrator authorization is required.',
       },
       {
         id: 3,
-        title: 'Forward to CAD for Approval',
-        description: 'Submitted to Campus Administrator / Administration for approval',
-        status: stage3Status,
-        date: stage3Date,
-        notes: stage3Notes,
+        title: 'Referred for Administrative Approval',
+        description: 'Official CAD endorsement document prepared',
+        status: isStage3Completed ? 'completed' : (isStage3Current ? 'current' : 'upcoming'),
+        date: cadGenRecord?.created_at || concern.cad_document_generated_at,
+        notes: 'Official approval document prepared for physical endorsement.',
       },
       {
         id: 4,
-        title: stage4Title,
-        description: stage4Desc,
-        status: stage4Status,
-        date: stage4Date,
-        notes: stage4Notes,
+        title: 'Awaiting Administrative Decision',
+        description: 'Physical paper endorsement submitted to Campus Administrator (CAD)',
+        status: isStage4Completed ? 'completed' : (isStage4Current ? 'current' : 'upcoming'),
+        date: cadSubmitRecord?.created_at || concern.cad_submitted_at,
+        notes: 'Document physically submitted to Campus Administrator for ink endorsement.',
       },
       {
         id: 5,
-        title: 'Resolution / Closure',
-        description: 'Action finalized and closed',
-        status: stage5Status,
-        date: stage5Date,
+        title: stage5Title,
+        description: stage5Desc,
+        status: isStage5Completed ? 'completed' : (isStage4Current ? 'upcoming' : 'upcoming'),
+        date: cadDecisionRecord?.created_at || concern.cad_decision_at,
         notes: stage5Notes,
+      },
+      {
+        id: 6,
+        title: 'Final Resolution & Implementation',
+        description: 'Official closure and departmental execution',
+        status: isResolved ? 'completed' : (isStage5Completed ? 'current' : 'upcoming'),
+        date: resolvedRecord?.created_at || concern.resolved_at,
+        notes: isResolved ? 'Action completed and concern officially closed.' : 'Awaiting final department implementation.',
       },
     ];
   };

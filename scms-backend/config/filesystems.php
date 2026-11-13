@@ -17,6 +17,18 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | CAD Approval Document Storage Disk
+    |--------------------------------------------------------------------------
+    |
+    | Defines the disk used to store and retrieve confidential signed CAD
+    | documents. Defaults to 'local' (private app storage) and can be set
+    | to 's3' or another cloud disk for persistent durability on Railway.
+    |
+    */
+    'cad_disk' => env('CAD_DOCUMENT_DISK', 'local'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Filesystem Disks
     |--------------------------------------------------------------------------
     |

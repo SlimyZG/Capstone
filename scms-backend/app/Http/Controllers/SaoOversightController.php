@@ -661,4 +661,34 @@ class SaoOversightController extends Controller
             'concern' => $freshConcern,
         ]);
     }
+
+    /**
+     * Download or stream signed CAD document for SAO if assigned to SAO (Option A).
+     */
+    public function downloadCadSignedDocument(Request $request, int $id)
+    {
+        $concern = Concern::find($id);
+        if (!$concern) {
+            return response()->json(['message' => 'Concern not found.'], 404);
+        }
+
+        if (!$this->isAssignedToSao($concern)) {
+            return response()->json([
+                'message' => 'Unauthorized. In accordance with strict SAO oversight boundaries (Option A), individual concern documents may only be accessed when the concern is explicitly assigned to the Student Affairs Office.',
+            ], 403);
+        }
+
+        $diskName = config('filesystems.cad_disk', 'local');
+        $disk = \Illuminate\Support\Facades\Storage::disk($diskName);
+        if (empty($concern->cad_signed_document_path) || !$disk->exists($concern->cad_signed_document_path)) {
+            return response()->json(['message' => 'Signed CAD document not found.'], 404);
+        }
+
+        $extension = pathinfo($concern->cad_signed_document_path, PATHINFO_EXTENSION) ?: 'pdf';
+        $filename = 'CAD_Signed_Document_' . $concern->concern_id . '.' . $extension;
+
+        return $disk->response($concern->cad_signed_document_path, $filename, [
+            'Cache-Control' => 'private, no-cache, no-store, must-revalidate',
+        ], 'inline');
+    }
 }

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { Paperclip, Send, CheckCircle2, ArrowUpCircle, ArrowRightLeft, ChevronLeft, Sparkles, User, AlertCircle } from 'lucide-react';
+import { Paperclip, Send, CheckCircle2, ArrowUpCircle, ArrowRightLeft, ChevronLeft, Sparkles, User, AlertCircle, FileText, Printer, Upload, Download, ExternalLink, Clock } from 'lucide-react';
 import api from '../api';
 import StatusBadge from '../components/StatusBadge';
 import PriorityBadge from '../components/PriorityBadge';
@@ -10,6 +10,8 @@ import AiSummaryCard from '../components/AiSummaryCard';
 import EmptyState from '../components/EmptyState';
 import SlaStatusBadge from '../components/SlaStatusBadge';
 import SlaTrackingCard from '../components/SlaTrackingCard';
+import CadApprovalDocumentModal from '../components/CadApprovalDocumentModal';
+import CadDecisionUploadModal from '../components/CadDecisionUploadModal';
 
 const DeptStaffConcernDetails = () => {
   const { id } = useParams();
@@ -20,6 +22,9 @@ const DeptStaffConcernDetails = () => {
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState('');
+  const [showCadDocModal, setShowCadDocModal] = useState(false);
+  const [showCadDecisionModal, setShowCadDecisionModal] = useState(false);
+  const [downloadingDoc, setDownloadingDoc] = useState(false);
   const messagesEndRef = useRef(null);
 
   useEffect(() => { fetchData(); }, [id]);
@@ -85,18 +90,42 @@ const DeptStaffConcernDetails = () => {
           : 'Escalate this concern to the Dean?';
         if (!window.confirm(confirmMsg)) { setActionLoading(''); return; }
         await api.post(`/dept-staff/concerns/${id}/escalate`);
-      } else if (action === 'forward_cad') {
-        if (!window.confirm('Forward this non-academic concern to CAD (Campus Administration) for approval?')) { 
-          setActionLoading(''); 
-          return; 
-        }
-        await api.post(`/dept-staff/concerns/${id}/forward-cad`);
       }
       fetchData();
     } catch (err) {
       alert(err.response?.data?.message || 'Action failed.');
     } finally {
       setActionLoading('');
+    }
+  };
+
+  const handleRecordPhysicalSubmission = async () => {
+    const notes = window.prompt('Enter physical submission notes for CAD receiving (optional):', 'Endorsed and submitted printed approval document to CAD.');
+    if (notes === null) return;
+    setActionLoading('cad_submit');
+    try {
+      await api.post(`/dept-staff/concerns/${id}/cad/record-submission`, { submission_notes: notes });
+      fetchData();
+    } catch (err) {
+      alert(err.response?.data?.message || 'Failed to record physical submission.');
+    } finally {
+      setActionLoading('');
+    }
+  };
+
+  const handleViewSignedDocument = async () => {
+    setDownloadingDoc(true);
+    try {
+      const response = await api.get(`/dept-staff/concerns/${id}/cad/signed-document`, {
+        responseType: 'blob'
+      });
+      const fileUrl = window.URL.createObjectURL(new Blob([response.data], { type: response.headers['content-type'] || 'application/pdf' }));
+      window.open(fileUrl, '_blank');
+    } catch (err) {
+      console.error(err);
+      alert(err.response?.data?.message || 'Failed to load signed document. You may not be authorized to view this document.');
+    } finally {
+      setDownloadingDoc(false);
     }
   };
 
@@ -358,28 +387,167 @@ const DeptStaffConcernDetails = () => {
                 </button>
               )}
 
-              {/* Non-Academic Forward to CAD */}
-              {canEscalate && !isAcademic && (
-                <button
-                  onClick={() => handleAction('forward_cad')}
-                  disabled={!!actionLoading}
-                  className="w-full btn-dark py-2.5 text-xs flex items-center justify-center gap-1.5"
-                >
-                  <ArrowUpCircle size={16} />
-                  <span>{actionLoading === 'forward_cad' ? 'Forwarding...' : 'Forward to CAD for Approval'}</span>
-                </button>
-              )}
-
               {concern.status === 'resolved' && (
                 <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800 text-xs flex items-center gap-2">
                   <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
                   <span>This concern has been officially resolved.</span>
                 </div>
               )}
-              {concern.status === 'escalated' && (
+              {concern.status === 'escalated' && !concern.cad_status && (
                 <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-blue-800 text-xs flex items-center gap-2">
                   <ArrowUpCircle size={16} className="text-blue-600 shrink-0" />
                   <span>Forwarded for higher administrative review.</span>
+                </div>
+              )}
+
+              {/* Conditional CAD Approval and Physical Tracking (Non-Academic Only) */}
+              {!isAcademic && (
+                <div className="mt-4 pt-4 border-t border-slate-200">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
+                      <FileText size={14} className="text-[#1e3a8a]" />
+                      CAD Administrative Approval
+                    </span>
+                    {concern.cad_status && (
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                        concern.cad_status === 'approved' ? 'bg-emerald-100 text-emerald-800' :
+                        concern.cad_status === 'rejected' ? 'bg-red-100 text-red-800' :
+                        concern.cad_status === 'returned' ? 'bg-amber-100 text-amber-800' :
+                        'bg-blue-100 text-blue-800'
+                      }`}>
+                        {concern.cad_status.replace('_', ' ')}
+                      </span>
+                    )}
+                  </div>
+
+                  <p className="text-[11px] text-slate-500 mb-3 leading-relaxed">
+                    Required only when high/critical administrative authorization is required. Routine concerns can be resolved directly above without CAD.
+                  </p>
+
+                  {/* Stage 1: Document Not Yet Generated */}
+                  {!concern.cad_status && canEscalate && (
+                    <button
+                      type="button"
+                      onClick={() => setShowCadDocModal(true)}
+                      className="w-full btn-dark py-2.5 text-xs flex items-center justify-center gap-1.5"
+                    >
+                      <FileText size={15} />
+                      <span>Generate CAD Approval Document</span>
+                    </button>
+                  )}
+
+                  {/* Stage 2: Generated — Awaiting Physical Submission */}
+                  {concern.cad_status === 'awaiting_submission' && (
+                    <div className="space-y-2 p-3 bg-amber-50/70 border border-amber-200 rounded-xl">
+                      <div className="text-xs text-amber-900 font-semibold flex items-center gap-1.5">
+                        <Clock size={14} className="text-amber-600" />
+                        <span>Document Generated — Print &amp; Submit</span>
+                      </div>
+                      <p className="text-[11px] text-amber-800">
+                        Generated on {formatDate(concern.cad_document_generated_at)}. Print paper copy, deliver physically to CAD, and record submission.
+                      </p>
+                      <div className="flex flex-col gap-1.5 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => setShowCadDocModal(true)}
+                          className="w-full btn-secondary py-2 text-xs flex items-center justify-center gap-1.5 bg-white"
+                        >
+                          <Printer size={14} />
+                          <span>View / Re-print Document</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleRecordPhysicalSubmission}
+                          disabled={actionLoading === 'cad_submit'}
+                          className="w-full btn-dark py-2 text-xs flex items-center justify-center gap-1.5"
+                        >
+                          <CheckCircle2 size={14} />
+                          <span>{actionLoading === 'cad_submit' ? 'Recording...' : 'Confirm Physical Submission to CAD'}</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Stage 3: Awaiting Decision */}
+                  {concern.cad_status === 'awaiting_decision' && (
+                    <div className="space-y-2 p-3 bg-blue-50/70 border border-blue-200 rounded-xl">
+                      <div className="text-xs text-blue-900 font-semibold flex items-center gap-1.5">
+                        <Clock size={14} className="text-blue-600" />
+                        <span>Physically with CAD for Review</span>
+                      </div>
+                      <p className="text-[11px] text-blue-800">
+                        Submitted on {formatDate(concern.cad_submitted_at)}. Once returned, upload the signed copy and record CAD's decision.
+                      </p>
+                      <div className="flex flex-col gap-1.5 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => setShowCadDocModal(true)}
+                          className="w-full btn-secondary py-1.5 text-xs flex items-center justify-center gap-1 bg-white"
+                        >
+                          <Printer size={13} />
+                          <span>View Document</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowCadDecisionModal(true)}
+                          className="w-full btn-primary py-2 text-xs flex items-center justify-center gap-1.5"
+                        >
+                          <Upload size={14} />
+                          <span>Record CAD Decision &amp; Upload Signed Document</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Stage 4: Decision Completed (Approved, Rejected, Returned) */}
+                  {['approved', 'rejected', 'returned'].includes(concern.cad_status) && (
+                    <div className={`space-y-2 p-3 rounded-xl border ${
+                      concern.cad_status === 'approved' ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900' :
+                      concern.cad_status === 'rejected' ? 'bg-red-50/70 border-red-200 text-red-900' :
+                      'bg-amber-50/70 border-amber-200 text-amber-900'
+                    }`}>
+                      <div className="text-xs font-bold flex items-center gap-1.5">
+                        <CheckCircle2 size={14} />
+                        <span>CAD Physical Decision: {concern.cad_status.toUpperCase()}</span>
+                      </div>
+                      <p className="text-[11px]">
+                        Recorded on {formatDate(concern.cad_decision_at || concern.cad_submitted_at)}.
+                      </p>
+                      {concern.cad_decision_notes && (
+                        <div className="p-2 bg-white/80 rounded border border-current text-[11px] italic">
+                          "{concern.cad_decision_notes}"
+                        </div>
+                      )}
+                      <div className="flex flex-col gap-1.5 pt-1">
+                        {concern.cad_signed_document_path && (
+                          <button
+                            type="button"
+                            onClick={handleViewSignedDocument}
+                            disabled={downloadingDoc}
+                            className="w-full btn-secondary py-1.5 text-xs flex items-center justify-center gap-1.5 bg-white text-[#1e3a8a] border-blue-200 hover:bg-blue-50"
+                          >
+                            <ExternalLink size={13} />
+                            <span>{downloadingDoc ? 'Loading Document...' : 'View Uploaded Signed Document'}</span>
+                          </button>
+                        )}
+                        {concern.cad_status === 'approved' && canResolve && (
+                          <p className="text-[11px] font-semibold text-emerald-800 text-center">
+                            CAD authorization granted. Use "Resolve Concern" above to conclude.
+                          </p>
+                        )}
+                        {(concern.cad_status === 'returned' || concern.cad_status === 'rejected') && (
+                          <button
+                            type="button"
+                            onClick={() => setShowCadDocModal(true)}
+                            className="w-full btn-secondary py-1.5 text-xs flex items-center justify-center gap-1.5 bg-white"
+                          >
+                            <FileText size={13} />
+                            <span>Revise / Re-generate CAD Document</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -435,6 +603,28 @@ const DeptStaffConcernDetails = () => {
           </div>
         </div>
       </div>
+
+      {/* CAD Modals */}
+      <CadApprovalDocumentModal
+        isOpen={showCadDocModal}
+        onClose={() => setShowCadDocModal(false)}
+        concern={concern}
+        currentUser={user}
+        onGeneratedSuccess={(updated) => {
+          setConcern(updated);
+          setShowCadDocModal(false);
+        }}
+      />
+
+      <CadDecisionUploadModal
+        isOpen={showCadDecisionModal}
+        onClose={() => setShowCadDecisionModal(false)}
+        concern={concern}
+        onDecisionRecorded={(updated) => {
+          setConcern(updated);
+          setShowCadDecisionModal(false);
+        }}
+      />
     </div>
   );
 };

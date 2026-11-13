@@ -46,6 +46,17 @@ class Concern extends Model
         'last_updated',
         'resolved_at',
         'forwarded_to_cad_at',
+        'cad_status',
+        'cad_document_generated_at',
+        'cad_department_notes',
+        'cad_submission_notes',
+        'cad_submitted_at',
+        'cad_submitted_by',
+        'cad_decision',
+        'cad_decision_at',
+        'cad_decision_by',
+        'cad_decision_notes',
+        'cad_signed_document_path',
         'is_anonymous',
         'attachments',
         'transferred_from',
@@ -72,6 +83,9 @@ class Concern extends Model
             'last_updated' => 'datetime',
             'resolved_at' => 'datetime',
             'forwarded_to_cad_at' => 'datetime',
+            'cad_document_generated_at' => 'datetime',
+            'cad_submitted_at' => 'datetime',
+            'cad_decision_at' => 'datetime',
             'sentiment_score' => 'float',
             'classification_confidence' => 'float',
             'is_priority_overridden' => 'boolean',
@@ -150,6 +164,22 @@ class Concern extends Model
     public function recurringIncident(): BelongsTo
     {
         return $this->belongsTo(RecurringIncident::class, 'recurring_incident_id');
+    }
+
+    /**
+     * Get the staff user who recorded physical CAD submission.
+     */
+    public function cadSubmittedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'cad_submitted_by');
+    }
+
+    /**
+     * Get the staff user who recorded the CAD decision.
+     */
+    public function cadDecisionBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'cad_decision_by');
     }
 
     /**
