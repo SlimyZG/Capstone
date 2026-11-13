@@ -383,6 +383,7 @@ const StudentConcernDetails = () => {
               <AiCategoryBadge
                 category={concern.issue_category}
                 subcategory={concern.issue_subcategory}
+                workflowType={concern.workflow_type}
               />
             )}
           </div>
@@ -402,7 +403,7 @@ const StudentConcernDetails = () => {
           
           {/* AI Issue Summary (Capped to 300 chars, clean wrapping without cut-off) */}
           {concern.ai_summary && (
-            <AiSummaryCard summary={concern.ai_summary} />
+            <AiSummaryCard summary={concern.ai_summary} metadata={concern.ai_metadata} />
           )}
 
           {/* Details Card */}

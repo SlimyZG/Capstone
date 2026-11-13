@@ -150,10 +150,10 @@ class ConcernController extends Controller
         // GeminiSentimentService overrides sentiment_score and sentiment_label when available.
         try {
             $localService  = app(\App\Services\LocalSentimentService::class);
-            $localResult   = $localService->analyzeConcern($concern->title, $concern->description);
+            $localResult   = $localService->analyzeConcern($concern->title, $concern->description, $workflowType);
 
             $geminiService = app(\App\Services\GeminiSentimentService::class);
-            $geminiResult  = $geminiService->analyzeConcern($concern->title, $concern->description);
+            $geminiResult  = $geminiService->analyzeConcern($concern->title, $concern->description, $workflowType);
 
             // Use Gemini sentiment values when available; fall back to local
             $sentimentScore            = $geminiResult['sentiment_score'] ?? $localResult['sentiment_score'];
@@ -162,7 +162,11 @@ class ConcernController extends Controller
             $aiPriority                = $geminiResult['priority_suggestion'] ?? $localResult['priority_suggestion'];
             $aiPriorityExplanation     = $geminiResult['priority_explanation'] ?? $localResult['priority_explanation'];
             $issueCategory             = $geminiResult['issue_category'] ?? $localResult['issue_category'];
-            $issueSubcategory          = $geminiResult['issue_subcategory'] ?? $localResult['issue_subcategory'];
+            // Keep category and subcategory paired: if Gemini supplied the category, never mix in a
+            // local subcategory that may belong to a different category.
+            $issueSubcategory          = isset($geminiResult['issue_category'])
+                ? ($geminiResult['issue_subcategory'] ?? null)
+                : $localResult['issue_subcategory'];
             $classificationExplanation = $geminiResult['classification_explanation'] ?? $localResult['classification_explanation'];
             $classificationConfidence  = $geminiResult['classification_confidence'] ?? $localResult['classification_confidence'];
             $aiSummary                 = $geminiResult['summary'] ?? $localResult['summary'];
@@ -346,28 +350,57 @@ class ConcernController extends Controller
 
         // Re-run AI Sentiment Analysis
         try {
-            $sentimentService = app(\App\Services\LocalSentimentService::class);
-            $result = $sentimentService->analyzeConcern($concern->title, $concern->description);
+            $localService  = app(\App\Services\LocalSentimentService::class);
+            $localResult   = $localService->analyzeConcern($concern->title, $concern->description, $workflowType);
+
+            $geminiService = app(\App\Services\GeminiSentimentService::class);
+            $geminiResult  = $geminiService->analyzeConcern($concern->title, $concern->description, $workflowType);
+
+            $sentimentScore            = $geminiResult['sentiment_score'] ?? $localResult['sentiment_score'];
+            $sentimentLabel            = $geminiResult['sentiment_label'] ?? $localResult['sentiment_label'];
+            $tokensUsed                = $geminiResult['api_tokens_used'] ?? 0;
+            $aiPriority                = $geminiResult['priority_suggestion'] ?? $localResult['priority_suggestion'];
+            $aiPriorityExplanation     = $geminiResult['priority_explanation'] ?? $localResult['priority_explanation'];
+            $issueCategory             = $geminiResult['issue_category'] ?? $localResult['issue_category'];
+            $issueSubcategory          = isset($geminiResult['issue_category'])
+                ? ($geminiResult['issue_subcategory'] ?? null)
+                : $localResult['issue_subcategory'];
+            $classificationExplanation = $geminiResult['classification_explanation'] ?? $localResult['classification_explanation'];
+            $classificationConfidence  = $geminiResult['classification_confidence'] ?? $localResult['classification_confidence'];
+            $aiSummary                 = $geminiResult['summary'] ?? $localResult['summary'];
 
             $updateData = [
-                'sentiment_score'            => $result['sentiment_score'] ?? null,
-                'sentiment_label'            => $result['sentiment_label'] ?? null,
-                'ai_priority'                => $result['priority_suggestion'] ?? null,
-                'ai_priority_explanation'    => $result['priority_explanation'] ?? null,
-                'issue_category'             => $result['issue_category'] ?? null,
-                'issue_subcategory'          => $result['issue_subcategory'] ?? null,
-                'classification_explanation' => $result['classification_explanation'] ?? null,
-                'classification_confidence'  => $result['classification_confidence'] ?? null,
-                'ai_summary'                 => $result['summary'] ?? null,
+                'sentiment_score'            => $sentimentScore,
+                'sentiment_label'            => $sentimentLabel,
+                'ai_priority'                => $aiPriority,
+                'ai_priority_explanation'    => $aiPriorityExplanation,
+                'issue_category'             => $issueCategory,
+                'issue_subcategory'          => $issueSubcategory,
+                'classification_explanation' => $classificationExplanation,
+                'classification_confidence'  => $classificationConfidence,
+                'ai_summary'                 => $aiSummary,
                 'ai_status'                  => 'complete',
             ];
 
             // Protect effective priority from silent AI reanalysis erasure if it was manually overridden
             if (!$concern->is_priority_overridden) {
-                $updateData['priority'] = $result['priority_suggestion'] ?? null;
+                $updateData['priority'] = $aiPriority;
             }
 
             $concern->update($updateData);
+
+            \Illuminate\Support\Facades\DB::table('sentiment_logs')->insert([
+                'concern_id'          => $concern->concern_id,
+                'raw_text_analyzed'   => "Title: {$concern->title}\nDescription: {$concern->description}",
+                'sentiment_score'     => $sentimentScore,
+                'sentiment_label'     => $sentimentLabel,
+                'priority_suggestion' => $aiPriority,
+                'ai_summary'          => $aiSummary,
+                'api_tokens_used'     => $tokensUsed,
+                'analyzed_at'         => now(),
+                'created_at'          => now(),
+                'updated_at'          => now(),
+            ]);
         } catch (\Exception $e) {
             \Illuminate\Support\Facades\Log::error('Sentiment analysis failed during edit: ' . $e->getMessage());
         }

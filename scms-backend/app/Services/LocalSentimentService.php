@@ -69,7 +69,7 @@ class LocalSentimentService
      *     api_tokens_used: int
      * }
      */
-    public function analyzeConcern(string $title, string $description): array
+    public function analyzeConcern(string $title, string $description, ?string $workflowType = null): array
     {
         $text = strtolower($title . ' ' . $description);
 
@@ -102,7 +102,7 @@ class LocalSentimentService
         $sentimentLabel = $this->getSentimentLabel($score, $text);
 
         // 2. Classify Issue Category & Subcategory
-        $classification = $this->determineClassification($title, $description);
+        $classification = $this->determineClassification($title, $description, $workflowType);
 
         // 3. Determine Content-Based Priority (independent of urgent wording or mere anger)
         $priorityAssessment = $this->determinePriority(
@@ -133,6 +133,7 @@ class LocalSentimentService
             'classification_confidence'  => $classification['confidence'],
             'summary'                    => $summary,
             'api_tokens_used'            => 0,
+            'ai_source'                  => 'local_fallback',
         ];
     }
 
@@ -164,7 +165,7 @@ class LocalSentimentService
     /**
      * Classify issue category and subcategory based on taxonomy keywords.
      */
-    public function determineClassification(string $title, string $description): array
+    public function determineClassification(string $title, string $description, ?string $workflowType = null): array
     {
         $taxonomy = config('classification.categories', []);
         $text = strtolower($title . ' ' . $description);
@@ -179,14 +180,26 @@ class LocalSentimentService
                 continue;
             }
 
+            // Exclude mismatched academic / non-academic top-level categories based on workflow
+            if ($workflowType === 'non_academic' && $category === 'Academic Concerns') {
+                continue;
+            }
+            if ($workflowType === 'academic' && $category === 'Non-Academic Concerns') {
+                continue;
+            }
+
             foreach ($subcategories as $subcategory => $keywords) {
                 $subScore = 0;
                 $currentMatches = [];
 
                 foreach ($keywords as $kw) {
                     $kwLower = strtolower($kw);
-                    // Match whole word or exact substring
-                    if (str_contains($text, $kwLower)) {
+                    // Very short keywords (e.g. "or", "ac", "cr") must match as whole words,
+                    // otherwise they match inside unrelated words such as "counselor".
+                    $matched = strlen($kwLower) <= 3
+                        ? (bool) preg_match('/\b' . preg_quote($kwLower, '/') . '\b/u', $text)
+                        : str_contains($text, $kwLower);
+                    if ($matched) {
                         // Longer terms give higher weight
                         $weight = str_contains($kwLower, ' ') ? 3 : 1;
                         // Title matches give 2x weight
@@ -196,6 +209,13 @@ class LocalSentimentService
                         $subScore += $weight;
                         $currentMatches[] = $kw;
                     }
+                }
+
+                // Align scoring with student's explicitly selected workflow
+                if ($workflowType === 'academic' && $category === 'Academic Concerns' && $subScore > 0) {
+                    $subScore += 2;
+                } elseif ($workflowType === 'non_academic' && $category === 'Non-Academic Concerns' && $subScore > 0) {
+                    $subScore += 2;
                 }
 
                 if ($subScore > $highestScore) {
@@ -256,7 +276,8 @@ class LocalSentimentService
         // 1. Critical Priority Assessment (Immediate hazard, safety risk, security breach, total outage)
         $safetyHazardPatterns = [
             'fire', 'electrical spark', 'sparking', 'exposed wire', 'gas leak', 'structural damage',
-            'hazard', 'physical threat', 'harassment', 'violence', 'suicide', 'weapon', 'injury', 'collapse'
+            'hazard', 'physical threat', 'harassment', 'violence', 'suicide', 'weapon', 'injury', 'collapse',
+            'punching', 'punched', 'punching my face', 'assault', 'physical assault', 'swollen', 'bleeding', 'beaten', 'attack', 'physical fight'
         ];
         foreach ($safetyHazardPatterns as $pattern) {
             if (str_contains($text, $pattern)) {
@@ -310,7 +331,8 @@ class LocalSentimentService
         $essentialServicePatterns = [
             'enrollment system down', 'enrollment portal offline', 'portal is down', 'portal offline',
             'lms is down', 'grading system down', 'cashier offline', 'cashier system down',
-            'cannot take exam', 'ongoing exam', 'midterm exam', 'final exam', 'exam blocked'
+            'cannot take exam', 'ongoing exam', 'midterm exam', 'final exam', 'exam blocked',
+            'auto-submitted', 'auto-submit', 'auto submit', 'quiz', 'examination', 'test disruption', 'unanswered questions'
         ];
         foreach ($essentialServicePatterns as $pattern) {
             if (str_contains($text, $pattern)) {
@@ -345,7 +367,7 @@ class LocalSentimentService
         // 4. Medium Priority (Default for localized issues, single machine, classroom fixture)
         return [
             'priority'    => 'medium',
-            'explanation' => "Medium priority: Localized issue affecting an individual workstation or facility fixture.",
+            'explanation' => "Medium priority: Localized issue affecting an individual student, workstation, or campus facility.",
         ];
     }
 
@@ -360,66 +382,135 @@ class LocalSentimentService
         string $priority
     ): string {
         $maxLen = (int) config('classification.max_summary_length', 300);
+        $rawCombined = $title . ' ' . $description;
+        $lower = strtolower($rawCombined);
 
-        // Detect location or room
+        // 1. Strip formal salutations and pleasantries
+        $cleanedDesc = trim($description);
+        $cleanedDesc = preg_replace('/^(?:(?:good\s+(?:morning|afternoon|day|evening)|greetings|hello|hi)\s*(?:(?:to\s+)?(?:the\s+)?(?:dear\s+)?[\w\s]+)?|dear\s+[\w\s]+|to\s+whom\s+it\s+may\s+concern)\s*[,:\-.]?\s*/i', '', $cleanedDesc);
+        $cleanedDesc = preg_replace('/^(?:i\s+am\s+writing\s+(?:this\s+)?to\s+(?:formally\s+)?(?:inform|report|notify|request|bring\s+to\s+your\s+attention)\s+(?:you\s+)?(?:that\s+)?|i\s+would\s+like\s+to\s+report\s+(?:that\s+)?|i\s+am\s+reporting\s+(?:that\s+)?|please\s+be\s+informed\s+that\s+)\s*/i', '', $cleanedDesc);
+        $cleanedDesc = trim($cleanedDesc);
+
+        // 2. Extract Location
         $location = '';
-        if (preg_match('/\b(?:room|rm|lab|bldg|building|ccs|library|cashier|registrar)\s*([a-z0-9\-]+)?\b/i', $title . ' ' . $description, $m)) {
-            $location = trim($m[0]);
+        if (preg_match('/\b(?:computer laboratory\s+room\s*\d+[a-z]?|laboratory\s+room\s*\d+[a-z]?|room\s*\d+[a-z]?|rm\s*\d+[a-z]?|lab\s*\d+[a-z]?|bldg\s*\w+|building\s*\w+|ccs|library|cashier|registrar|canteen|hallway|corridor)\b/i', $rawCombined, $lm)) {
+            $location = trim($lm[0]);
+            if (preg_match('/room\s*(\d+[a-z]?)/i', $location, $rm)) {
+                $location = "Room " . strtoupper($rm[1]);
+            } elseif (preg_match('/lab\s*(\d+[a-z]?)/i', $location, $lbm)) {
+                $location = "Lab " . strtoupper($lbm[1]);
+            }
         }
 
-        // Detect equipment or subject
+        // 3. Extract Equipment / Subject
         $equipment = '';
-        if (preg_match('/\b(?:pc\s*\d+|computer\s*\d+|projector|printer|monitor|wifi|network|portal|aircon|ac)\b/i', $title . ' ' . $description, $em)) {
+        if (preg_match('/\b(?:workstation\s+pc[-\s]*\d+|pc[-\s]*\d+|computer[-\s]*\d+|projector|printer|monitor|wifi|internet|network|lms|portal|canvas|aircon|air conditioning|ac|school id|student id|id card|quiz|exam|midterm|finals)\b/i', $rawCombined, $em)) {
             $equipment = trim($em[0]);
         }
 
-        // Extract core problem from description or title
-        // Clean off conversational intros and greetings
-        $cleanedDesc = preg_replace('/^(?:hello|hi|greetings[^.!?]*|good day|good morning|good afternoon|dear [^.!?]*|i would like to report that|i am writing this to [^.!?]*|i am reporting that)\s*[,:\-.]?\s*/i', '', trim($description));
-        
+        // Pattern A: Physical assault / Violence / Bullying
+        if (preg_match('/\b(?:punching|punched|punches|punch|assault|physical assault|violence|beaten|swollen|bleeding|attacked|attack)\b/i', $lower)) {
+            $actor = preg_match('/\b(?:classmate|schoolmate|student|peer|fellow student)\b/i', $lower, $am) ? "by {$am[0]}" : "";
+            $injuries = [];
+            if (str_contains($lower, 'swollen')) $injuries[] = 'swelling';
+            if (str_contains($lower, 'bleeding')) $injuries[] = 'bleeding';
+            if (str_contains($lower, 'face') || str_contains($lower, 'facial')) $injuries[] = 'facial injury';
+            $injuryText = !empty($injuries) ? ' resulting in ' . implode(' and ', $injuries) : '';
+            $locText = $location ? " in {$location}" : "";
+            return "Physical assault / bullying incident{$locText}: Student reports being attacked/punched {$actor}{$injuryText}; immediate intervention and support requested.";
+        }
+
+        // Pattern B: Missing / Lost Credential or Property
+        if (preg_match('/\b(?:missing|lost|misplaced|stolen|dropped)\b/i', $lower) && preg_match('/\b(?:school id|student id|id card|id|wallet|item)\b/i', $lower)) {
+            $item = preg_match('/\b(?:school id|student id|id card)\b/i', $lower, $im) ? strtoupper($im[0]) : "ID card";
+            return "Lost/Missing Credential: Student reports missing {$item} and requests assistance with retrieval or replacement.";
+        }
+
+        // Pattern C: LMS / Online Quiz / Exam Disruption
+        if (preg_match('/\b(?:lms|quiz|exam|examination|test|prelim|midterm|finals)\b/i', $lower) && preg_match('/\b(?:auto-submitted|auto submitted|submitted|timer|unanswered|crashed|locked out|freeze)\b/i', $lower)) {
+            $details = [];
+            if (preg_match('/\b(?:after\s+\w+\s+minutes?|\d+\s+minutes?)\b/i', $cleanedDesc, $tm)) {
+                $details[] = $tm[0];
+            }
+            if (preg_match('/\b\d+\s+questions?\s+unanswered\b/i', $cleanedDesc, $qm)) {
+                $details[] = $qm[0];
+            }
+            $detailStr = !empty($details) ? ' (' . implode(', ', $details) . ')' : '';
+            return "Academic assessment disruption: LMS prematurely submitted quiz/exam{$detailStr}, affecting student assessment completion.";
+        }
+
+        // Pattern D: Equipment / Facility / Laboratory Disruption
+        if ($location || $equipment) {
+            $sentences = preg_split('/(?<=[.?!])\s+/', $cleanedDesc);
+            $coreProblem = '';
+
+            foreach ($sentences as $s) {
+                $sTrim = trim($s);
+                if (preg_match('/^(?:i am a|i am currently|we are currently)\b/i', $sTrim)) {
+                    continue;
+                }
+                if (preg_match('/\b(?:crashing|crashes|shutdown|power failure|burning|smoke|not working|broken|flickering|sparking|leak|lukewarm|failed|error|offline)\b/i', $sTrim)) {
+                    $coreProblem = $sTrim;
+                    break;
+                }
+            }
+
+            if (!$coreProblem) {
+                foreach ($sentences as $s) {
+                    $sTrim = trim($s);
+                    if (preg_match('/^(?:i am a|i am currently|during our|we attempted)\b/i', $sTrim)) continue;
+                    if (mb_strlen($sTrim) > 15) {
+                        $coreProblem = $sTrim;
+                        break;
+                    }
+                }
+            }
+            if (!$coreProblem) {
+                $coreProblem = $sentences[0] ?? $cleanedDesc;
+            }
+
+            // Clean off leading prepositions if any: "inside Lab 3, computer workstation..." -> "Computer workstation..."
+            $coreProblem = preg_replace('/^(?:inside|at|in|on)\s+[^,]+,\s*/i', '', $coreProblem);
+            // Clean off tail boilerplate
+            $coreProblem = preg_replace('/\s*(?:we attempted to|please look into|thank you|hoping for)[^.!?]*[.!?]?$/i', '', $coreProblem);
+            $coreProblem = ucfirst(rtrim(trim($coreProblem), '.'));
+
+            $prefix = $location ? "{$location}: " : "";
+            if ($location && str_contains(strtolower($coreProblem), strtolower($location))) {
+                $prefix = "";
+            }
+
+            $candidate = $prefix . $coreProblem . '.';
+            if (mb_strlen($candidate) <= $maxLen) {
+                return $candidate;
+            }
+        }
+
+        // Fallback: General synthesized synopsis
         $sentences = preg_split('/(?<=[.?!])\s+/', $cleanedDesc);
-        $coreSentence = $sentences[0] ?? $cleanedDesc;
-        // Skip purely personal introductions like "I am a third-year student enrolled in Section 3A"
+        $meaningful = [];
         foreach ($sentences as $s) {
-            $sTrim = trim($s);
-            if (preg_match('/^(?:i am a|i am currently enrolled|my name is|as a student)\b/i', $sTrim)) {
-                continue;
-            }
-            if (mb_strlen($sTrim) > 10) {
-                $coreSentence = $sTrim;
-                break;
+            $st = trim($s);
+            if (preg_match('/^(?:thank you|please|sincerely|greetings)\b/i', $st)) continue;
+            if (mb_strlen($st) > 8) {
+                $meaningful[] = $st;
             }
         }
-        $coreProblem = rtrim($coreSentence, '.');
+        $extracted = !empty($meaningful) ? implode(' ', array_slice($meaningful, 0, 2)) : $cleanedDesc;
+        $extracted = rtrim(trim($extracted), '.');
 
-        // Build compact summary
-        $prefix = '';
-        if ($location && $equipment) {
-            $prefix = ucfirst($location) . " ({$equipment}): ";
-        } elseif ($location) {
-            $prefix = ucfirst($location) . ": ";
-        } elseif ($equipment) {
-            $prefix = ucfirst($equipment) . ": ";
+        $isGenericTitle = (bool) preg_match('/^(?:concern|issue|problem|inquiry|help|request|question|i need help)[.!?:-]?$/i', trim($title));
+        if (!$isGenericTitle && !str_contains(strtolower($extracted), strtolower($title))) {
+            $candidate = rtrim($title, '.!?:-') . ': ' . $extracted . '.';
+        } else {
+            $candidate = $extracted . '.';
         }
 
-        // Avoid repeating location if title already prominently includes it
-        if ($location && str_contains(strtolower($title), strtolower($location))) {
-            $prefix = '';
+        if (mb_strlen($candidate) > $maxLen) {
+            $candidate = mb_substr($candidate, 0, $maxLen - 3) . '...';
         }
 
-        $summary = $prefix . $title . ' — ' . $coreProblem . '.';
-
-        // If exceeds max length, truncate gracefully
-        if (mb_strlen($summary) > $maxLen) {
-            $truncated = mb_substr($summary, 0, $maxLen - 3);
-            $lastSpace = mb_strrpos($truncated, ' ');
-            if ($lastSpace !== false && $lastSpace > ($maxLen / 2)) {
-                $truncated = mb_substr($truncated, 0, $lastSpace);
-            }
-            $summary = rtrim($truncated, '.,- ') . '...';
-        }
-
-        return $summary;
+        return $candidate;
     }
 
     /**
@@ -459,23 +550,23 @@ class LocalSentimentService
                 'explanation' => 'Concern involves student portal access, campus Wi-Fi/network connectivity, or electronic data processing systems.',
             ],
             'clinic' => [
-                'keywords' => ['clinic', 'medical', 'doctor', 'nurse', 'medicine', 'sick', 'medical certificate', 'med cert', 'first aid', 'injury', 'physical exam', 'fever', 'dental', 'health'],
+                'keywords' => ['clinic', 'medical', 'doctor', 'nurse', 'medicine', 'sick', 'medical certificate', 'med cert', 'first aid', 'injury', 'physical exam', 'fever', 'dental', 'health', 'swollen', 'bleeding', 'punched', 'physical trauma', 'facial injury'],
                 'explanation' => 'Concern involves student health services, clinic checkups, medical certificates, or campus first-aid.',
             ],
             'guidance' => [
-                'keywords' => ['guidance', 'counselor', 'counseling', 'mental health', 'emotional', 'stress', 'anxiety', 'depression', 'psychological', 'bullying support', 'well-being', 'personal crisis'],
-                'explanation' => 'Concern involves student mental health, counseling consultations, or psychological support.',
+                'keywords' => ['guidance', 'counselor', 'counseling', 'mental health', 'emotional', 'stress', 'anxiety', 'depression', 'psychological', 'bullying support', 'well-being', 'personal crisis', 'harassment', 'harass', 'bully', 'bullying', 'bullied', 'cyberbully', 'cyberbullying', 'peer conflict', 'peer harassment', 'threatens me', 'threatened', 'punching', 'punched', 'assault', 'physical assault', 'beaten', 'physical fight'],
+                'explanation' => 'Concern involves student mental health, counseling consultations, psychological support, peer conflict, or student-to-student harassment.',
             ],
             'scholarship' => [
                 'keywords' => ['scholarship', 'scholar', 'ched', 'unifast', 'financial aid', 'grant', 'discount', 'voucher', 'stipend', 'subsidy'],
                 'explanation' => 'Concern involves institutional scholarships, government educational subsidies, or tuition discounts.',
             ],
             'security' => [
-                'keywords' => ['csu', 'security', 'guard', 'lost and found', 'lost id', 'stolen', 'theft', 'gate', 'campus entrance', 'parking', 'safety', 'vehicle', 'confiscated', 'trespassing'],
+                'keywords' => ['csu', 'security', 'guard', 'lost and found', 'lost id', 'school id', 'missing id', 'missing', 'id card', 'lost school id', 'stolen', 'theft', 'gate', 'campus entrance', 'parking', 'safety', 'vehicle', 'confiscated', 'trespassing', 'assault', 'physical assault', 'violence', 'physical fight'],
                 'explanation' => 'Concern involves campus security, gate entry, lost-and-found items, parking, or civil security.',
             ],
             'sao' => [
-                'keywords' => ['sao', 'student affairs', 'student council', 'organization', 'student club', 'activity permit', 'student handbook', 'disciplinary', 'uniform policy', 'id validation', 'student governance'],
+                'keywords' => ['sao', 'student affairs', 'student council', 'organization', 'student club', 'activity permit', 'student handbook', 'disciplinary', 'uniform policy', 'id validation', 'student governance', 'school id', 'missing id', 'missing school id', 'lost id', 'id replacement', 'missing item'],
                 'explanation' => 'Concern involves student organization permits, campus activities, student handbook policies, or student affairs governance.',
             ],
             'sto' => [

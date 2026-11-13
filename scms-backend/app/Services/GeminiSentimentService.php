@@ -50,7 +50,7 @@ class GeminiSentimentService
      * }|null
      *         Returns null when the API key is absent, the call fails, or the response is invalid.
      */
-    public function analyzeConcern(string $title, string $description): ?array
+    public function analyzeConcern(string $title, string $description, ?string $workflowType = null): ?array
     {
         $apiKey = config('services.gemini.api_key', '');
         $model  = config('services.gemini.model', 'gemini-3.5-flash');
@@ -64,7 +64,7 @@ class GeminiSentimentService
 
         $endpoint = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent";
 
-        $prompt = $this->buildPrompt($title, $description);
+        $prompt = $this->buildPrompt($title, $description, $workflowType);
 
         $payload = [
             'contents' => [
@@ -96,7 +96,7 @@ class GeminiSentimentService
                 return null;
             }
 
-            return $this->parseResponse($response->json());
+            return $this->parseResponse($response->json(), $workflowType);
         } catch (\Illuminate\Http\Client\ConnectionException $e) {
             Log::warning('GeminiSentimentService: Connection timeout or network error.');
             return null;
@@ -112,13 +112,21 @@ class GeminiSentimentService
      * The prompt is deliberately brief; it does not include the raw concern text
      * in the log — only in the API payload, which is not stored.
      */
-    private function buildPrompt(string $title, string $description): string
+    private function buildPrompt(string $title, string $description, ?string $workflowType = null): string
     {
+        $workflowHint = match ($workflowType) {
+            'non_academic' => "The student filed this under the NON-ACADEMIC workflow (operational/administrative offices). Use \"Non-Academic Concerns\" (or \"IT and Technology\"/\"Other / Needs Review\"), never \"Academic Concerns\".",
+            'academic' => "The student filed this under the ACADEMIC workflow (their academic unit). Do not use \"Non-Academic Concerns\".",
+            default => 'No workflow was specified.',
+        };
+
         return <<<PROMPT
 Analyze the following student concern submitted to a university management system.
 
 Title: {$title}
 Description: {$description}
+
+Workflow context: {$workflowHint}
 
 Instructions:
 1. Sentiment:
@@ -128,6 +136,8 @@ Instructions:
 2. Issue Classification:
    - "issue_category": choose from "IT and Technology", "Academic Concerns", "Non-Academic Concerns", "Other / Needs Review".
    - "issue_subcategory": specific problem area (e.g. "Computer Hardware", "Network / Internet", "Classroom Issues", "Laboratory Issues", "Cashier / Payment", "Campus Facilities", "General Inquiries").
+   - Student-to-student harassment, bullying or conflict, and requests for Guidance Center counseling, are Non-Academic Concerns (subcategories "Peer Conflict / Harassment" or "Student Affairs"). They are NOT "Personnel / Staff Grievance", which is only for complaints about school employees.
+   - "Instructor / Teaching Concerns" is only for legitimate academic concerns about an instructor's teaching, grading or syllabus.
    - "classification_explanation": 1 concise sentence explaining the classification.
    - "classification_confidence": float between 0.0 and 1.0.
 3. Priority Assessment:
@@ -159,7 +169,7 @@ PROMPT;
      * @param  array<mixed>|null  $responseBody
      * @return array<string, mixed>|null
      */
-    private function parseResponse(?array $responseBody): ?array
+    private function parseResponse(?array $responseBody, ?string $workflowType = null): ?array
     {
         if (!is_array($responseBody)) {
             Log::warning('GeminiSentimentService: Empty or non-array response body.');
@@ -181,8 +191,10 @@ PROMPT;
             return null;
         }
 
-        // Validate sentiment_label
-        $label = $decoded['sentiment_label'] ?? null;
+        // Validate sentiment_label (case-insensitive)
+        $label = isset($decoded['sentiment_label']) && is_string($decoded['sentiment_label'])
+            ? strtolower(trim($decoded['sentiment_label']))
+            : null;
         if (!in_array($label, self::ALLOWED_LABELS, true)) {
             Log::warning(
                 'GeminiSentimentService: Invalid sentiment_label "' . ($label ?? 'null') . '" in model output.'
@@ -208,14 +220,44 @@ PROMPT;
             'sentiment_score'  => $score,
             'sentiment_label'  => $label,
             'api_tokens_used'  => $tokensUsed > 0 ? $tokensUsed : 1, // at least 1 to mark as Gemini result
+            'ai_source'        => 'gemini',
         ];
 
         // Optional Phase 7 classification fields if provided by model
         if (!empty($decoded['issue_category']) && in_array($decoded['issue_category'], self::ALLOWED_CATEGORIES, true)) {
-            $result['issue_category'] = $decoded['issue_category'];
+            $cat = $decoded['issue_category'];
+            if ($workflowType === 'non_academic' && $cat === 'Academic Concerns') {
+                $cat = 'Non-Academic Concerns';
+            } elseif ($workflowType === 'academic' && $cat === 'Non-Academic Concerns') {
+                $cat = 'Academic Concerns';
+            }
+            $result['issue_category'] = $cat;
         }
+
         if (!empty($decoded['issue_subcategory']) && is_string($decoded['issue_subcategory'])) {
-            $result['issue_subcategory'] = substr(trim($decoded['issue_subcategory']), 0, 100);
+            $sub = substr(trim($decoded['issue_subcategory']), 0, 100);
+            $targetCategory = $result['issue_category'] ?? null;
+            $taxonomy = (array) config('classification.categories', []);
+
+            // Check if subcategory exists directly in the target category
+            $validInTarget = $targetCategory && isset($taxonomy[$targetCategory]) && array_key_exists($sub, $taxonomy[$targetCategory]);
+
+            if ($validInTarget) {
+                $result['issue_subcategory'] = $sub;
+            } else {
+                // Check if it strictly belongs to an incompatible opposing domain
+                $isAcademicSub = isset($taxonomy['Academic Concerns']) && array_key_exists($sub, $taxonomy['Academic Concerns']);
+                $isNonAcademicSub = isset($taxonomy['Non-Academic Concerns']) && array_key_exists($sub, $taxonomy['Non-Academic Concerns']);
+
+                if ($targetCategory === 'Non-Academic Concerns' && $isAcademicSub) {
+                    // Contradiction: academic subcategory under non-academic category -> omit
+                } elseif ($targetCategory === 'Academic Concerns' && $isNonAcademicSub) {
+                    // Contradiction: non-academic subcategory under academic category -> omit
+                } else {
+                    // Legitimate descriptive subcategory (e.g. "Assessment and Examination", "General Inquiries", etc.)
+                    $result['issue_subcategory'] = $sub;
+                }
+            }
         }
         if (!empty($decoded['classification_explanation']) && is_string($decoded['classification_explanation'])) {
             $result['classification_explanation'] = trim($decoded['classification_explanation']);
@@ -223,8 +265,8 @@ PROMPT;
         if (isset($decoded['classification_confidence']) && is_numeric($decoded['classification_confidence'])) {
             $result['classification_confidence'] = max(0.0, min(1.0, round((float) $decoded['classification_confidence'], 3)));
         }
-        if (!empty($decoded['priority_suggestion']) && in_array($decoded['priority_suggestion'], self::ALLOWED_PRIORITIES, true)) {
-            $result['priority_suggestion'] = $decoded['priority_suggestion'];
+        if (!empty($decoded['priority_suggestion']) && in_array(strtolower(trim($decoded['priority_suggestion'])), self::ALLOWED_PRIORITIES, true)) {
+            $result['priority_suggestion'] = strtolower(trim($decoded['priority_suggestion']));
         }
         if (!empty($decoded['priority_explanation']) && is_string($decoded['priority_explanation'])) {
             $result['priority_explanation'] = trim($decoded['priority_explanation']);
@@ -448,6 +490,7 @@ Rules:
 2. Provide a confidence score between 0.0 (uncertain) and 1.0 (highly confident).
 3. If the concern does not clearly match any operational department or confidence is low, set confidence below 0.50.
 4. Provide a 1-2 sentence factual explanation for your recommendation.
+5. Student-to-student peer conflict, harassment, bullying, or counseling consultation requests should be routed to Guidance Center (or Student Affairs Office / SAO if Guidance Center is unavailable).
 
 Return ONLY a JSON object:
 {

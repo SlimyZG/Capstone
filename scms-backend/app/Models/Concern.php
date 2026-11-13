@@ -22,6 +22,11 @@ class Concern extends Model
      */
     public $timestamps = false;
 
+    /**
+     * The accessors to append to the model's array form.
+     */
+    protected $appends = ['ai_metadata'];
+
     protected $fillable = [
         'student_id',
         'academic_unit_id',
@@ -145,5 +150,72 @@ class Concern extends Model
     public function recurringIncident(): BelongsTo
     {
         return $this->belongsTo(RecurringIncident::class, 'recurring_incident_id');
+    }
+
+    /**
+     * Get metadata describing the source and status of AI sentiment/summary analysis.
+     * Internal token usage is strictly restricted to authorized staff roles.
+     */
+    public function getAiMetadataAttribute(): array
+    {
+        $status = $this->ai_status ?? 'pending';
+
+        $user = auth('sanctum')->user() ?? auth()->user() ?? request()?->user();
+        $isAuthorized = $user && in_array($user->role, ['dept_staff', 'dean', 'sao', 'admin'], true);
+
+        if ($status === 'failed') {
+            $meta = [
+                'status' => 'failed',
+                'source' => 'failed',
+                'label' => 'Analysis Failed',
+                'is_fallback' => false,
+            ];
+            if ($isAuthorized) {
+                $meta['tokens_used'] = 0;
+            }
+            return $meta;
+        }
+
+        if ($status === 'pending') {
+            $meta = [
+                'status' => 'pending',
+                'source' => 'pending',
+                'label' => 'Processing...',
+                'is_fallback' => false,
+            ];
+            if ($isAuthorized) {
+                $meta['tokens_used'] = 0;
+            }
+            return $meta;
+        }
+
+        $tokensUsed = 0;
+        try {
+            $log = \Illuminate\Support\Facades\DB::table('sentiment_logs')
+                ->where('concern_id', $this->concern_id)
+                ->orderBy('id', 'desc')
+                ->first();
+
+            if ($log) {
+                $tokensUsed = (int) ($log->api_tokens_used ?? 0);
+            }
+        } catch (\Throwable $e) {
+            $tokensUsed = 0;
+        }
+
+        $isGemini = $tokensUsed > 0;
+
+        $meta = [
+            'status' => 'complete',
+            'source' => $isGemini ? 'gemini' : 'local_fallback',
+            'label' => $isGemini ? 'Gemini AI' : 'Rule-based Engine',
+            'is_fallback' => !$isGemini,
+        ];
+
+        if ($isAuthorized) {
+            $meta['tokens_used'] = $tokensUsed;
+        }
+
+        return $meta;
     }
 }

@@ -22,6 +22,12 @@ return [
             'Other IT Issues' => ['it support', 'tech support', 'server', 'backup', 'data'],
         ],
         'Academic Concerns' => [
+            'Assessment and Examination' => [
+                'quiz', 'exam', 'examination', 'test', 'prelim', 'midterm', 'finals',
+                'auto-submitted', 'auto-submit', 'auto submit', 'unanswered questions',
+                'unanswered', 'quiz timer', 'exam timer', 'quiz submission', 'grading error',
+                'assessment issue', 'quiz issue', 'exam disruption', 'practical exam'
+            ],
             'Classroom Equipment / AV' => [
                 'projector', 'classroom projector', 'lab projector', 'laboratory projector', 'hdmi', 'hdmi cable', 'display cable',
                 'projector display', 'projector screen', 'audio visual', 'av', 'speaker in classroom', 'sound system', 'smart board',
@@ -38,11 +44,20 @@ return [
             'Administrative Services' => ['admin', 'clearance', 'document request', 'certificate', 'endorsement'],
             'Registrar Services' => ['registrar', 'transcript', 'tor', 'diploma', 'form 137', 'cor', 'certificate of registration', 'grades copy'],
             'Cashier / Payment' => ['cashier', 'tuition', 'payment', 'receipt', 'or', 'refund', 'installment', 'balance', 'accounting'],
-            'Student Affairs' => ['sao', 'student affairs', 'student id', 'id card', 'organization', 'club', 'counseling', 'guidance', 'discipline'],
-            'Campus Facilities' => ['restroom', 'toilet', 'cr', 'canteen', 'cafeteria', 'hallway', 'corridor', 'drinking fountain', 'elevator', 'ventilation', 'ac'],
+            'Student Affairs' => ['sao', 'student affairs', 'student id', 'school id', 'missing id', 'missing school id', 'lost id', 'id card', 'id replacement', 'organization', 'club', 'counseling', 'counselor', 'guidance', 'guidance center', 'guidance office', 'discipline'],
+            'Peer Conflict / Harassment' => [
+                'classmate', 'schoolmate', 'peer', 'harass', 'harassment', 'bully', 'bullying', 'bullied', 'cyberbully', 'cyberbullying',
+                'student threatens', 'threatens me', 'threatened', 'stalking', 'intimidat',
+                'punching', 'punched', 'punching my face', 'assault', 'physical assault', 'violence', 'swollen', 'bleeding', 'beaten', 'attack', 'attacked', 'physical fight'
+            ],
+            'Personnel / Staff Grievance' => ['personnel', 'employee', 'staff attitude', 'rude staff', 'staff member', 'office staff', 'rudeness', 'service attitude', 'teller', 'rude cashier', 'rude employee'],
+            'Campus Facilities' => ['restroom', 'toilet', 'cr', 'canteen', 'cafeteria', 'hallway', 'corridor', 'drinking fountain', 'elevator', 'ventilation', 'ac', 'aircon', 'air conditioning', 'air conditioner'],
             'Maintenance' => ['maintenance', 'broken chair', 'broken desk', 'light bulb', 'leak', 'plumbing', 'electrical', 'wire', 'water'],
-            'Safety and Security' => ['security', 'guard', 'safety', 'theft', 'stolen', 'hazard', 'fire hazard', 'emergency', 'harassment', 'threat', 'injury'],
-            'Other Operational Concerns' => ['clinic', 'health services', 'parking', 'lost and found'],
+            'Safety and Security' => [
+                'security', 'guard', 'csu', 'safety', 'theft', 'stolen', 'hazard', 'fire hazard', 'emergency', 'harassment', 'threat', 'injury',
+                'assault', 'physical assault', 'violence', 'punching', 'punched', 'attack', 'attacked', 'bleeding', 'swollen', 'physical fight'
+            ],
+            'Other Operational Concerns' => ['clinic', 'health services', 'medical clinic', 'first aid', 'parking', 'lost and found', 'missing', 'missing item', 'lost item'],
         ],
         'Other / Needs Review' => [
             'General Inquiries' => ['inquiry', 'question', 'ask', 'how to', 'general', 'info', 'information'],
@@ -63,7 +78,11 @@ return [
         'critical' => [
             'indicators' => [
                 'campus_wide' => ['entire campus', 'campus-wide', 'whole university', 'all students', 'all buildings'],
-                'safety_hazard' => ['fire', 'exposed wire', 'electrical spark', 'gas leak', 'structural damage', 'hazard', 'safety risk', 'physical threat', 'emergency'],
+                'safety_hazard' => [
+                    'fire', 'exposed wire', 'electrical spark', 'gas leak', 'structural damage', 'hazard',
+                    'safety risk', 'physical threat', 'emergency', 'punching', 'punched', 'assault',
+                    'physical assault', 'violence', 'swollen', 'bleeding', 'beaten', 'physical fight'
+                ],
                 'security_breach' => ['ransomware', 'malware spreading', 'data breach', 'hacked', 'data leak', 'credential leak'],
                 'total_blackout' => ['power outage', 'blackout', 'total network failure', 'all servers down'],
             ],
@@ -73,7 +92,10 @@ return [
             'indicators' => [
                 'department_wide' => ['entire lab', 'whole lab', 'all computers in lab', 'department-wide', 'multiple classrooms'],
                 'essential_service' => ['enrollment system down', 'portal offline', 'cashier offline', 'exam disruption', 'midterm', 'finals', 'grading deadline'],
-                'exam_blocker' => ['cannot take exam', 'ongoing exam', 'laboratory exam blocked'],
+                'exam_blocker' => [
+                    'cannot take exam', 'ongoing exam', 'laboratory exam blocked', 'auto-submitted',
+                    'auto-submit', 'auto submit', 'quiz', 'examination', 'test disruption', 'unanswered questions'
+                ],
             ],
             'min_confidence' => 0.75,
         ],

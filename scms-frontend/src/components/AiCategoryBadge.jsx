@@ -1,7 +1,14 @@
 import { Tag, Sparkles } from 'lucide-react';
 
-const AiCategoryBadge = ({ category, subcategory, confidence, showConfidence = false, size = 'sm' }) => {
+const AiCategoryBadge = ({ category, subcategory, confidence, showConfidence = false, size = 'sm', workflowType = null }) => {
   if (!category && !subcategory) return null;
+
+  let displayCategory = category;
+  if (workflowType === 'non_academic' && displayCategory === 'Academic Concerns') {
+    displayCategory = 'Non-Academic Concerns';
+  } else if (workflowType === 'academic' && displayCategory === 'Non-Academic Concerns') {
+    displayCategory = 'Academic Concerns';
+  }
 
   const sizeClasses = size === 'xs' ? 'px-2 py-0.5 text-[11px]' : 'px-2.5 py-1 text-xs';
 
@@ -11,7 +18,7 @@ const AiCategoryBadge = ({ category, subcategory, confidence, showConfidence = f
         className={`inline-flex items-center gap-1.5 font-medium rounded-md bg-blue-50/80 text-[#1e3a8a] border border-blue-200/80 shadow-2xs ${sizeClasses}`}
       >
         <Tag size={12} className="text-blue-600 shrink-0" />
-        <span className="font-semibold text-slate-800">{category}</span>
+        <span className="font-semibold text-slate-800">{displayCategory}</span>
         {subcategory && (
           <>
             <span className="text-blue-400 font-bold" aria-hidden="true">›</span>

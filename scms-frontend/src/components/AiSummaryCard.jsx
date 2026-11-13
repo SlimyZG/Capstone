@@ -1,18 +1,60 @@
-import { Sparkles, Info } from 'lucide-react';
+import { Sparkles, Cpu, Bot, AlertCircle, Clock } from 'lucide-react';
 
-const AiSummaryCard = ({ summary, title = 'AI Issue Summary', className = '' }) => {
+const AiSummaryCard = ({ summary, metadata = null, title = 'AI Issue Summary', className = '' }) => {
   if (!summary) return null;
 
+  // Determine source badge styling and label
+  let sourceBadge = (
+    <span className="inline-flex items-center gap-1 text-[11px] text-blue-600 font-medium bg-blue-100/70 px-2 py-0.5 rounded-full border border-blue-200/60">
+      <Sparkles size={11} className="text-blue-500 shrink-0" />
+      Automated
+    </span>
+  );
+
+  if (metadata) {
+    if (metadata.status === 'failed') {
+      sourceBadge = (
+        <span className="inline-flex items-center gap-1 text-[11px] text-red-700 font-medium bg-red-50 px-2 py-0.5 rounded-full border border-red-200">
+          <AlertCircle size={11} className="text-red-500 shrink-0" />
+          Fallback Inactive
+        </span>
+      );
+    } else if (metadata.status === 'pending') {
+      sourceBadge = (
+        <span className="inline-flex items-center gap-1 text-[11px] text-amber-700 font-medium bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200 animate-pulse">
+          <Clock size={11} className="text-amber-500 shrink-0" />
+          Processing...
+        </span>
+      );
+    } else if (metadata.source === 'gemini') {
+      sourceBadge = (
+        <span className="inline-flex items-center gap-1 text-[11px] text-indigo-700 font-semibold bg-indigo-50 px-2.5 py-0.5 rounded-full border border-indigo-200" title="Generated using Google Gemini AI">
+          <Bot size={11} className="text-indigo-600 shrink-0" />
+          Gemini AI
+        </span>
+      );
+    } else if (metadata.is_fallback || metadata.source === 'local_fallback') {
+      sourceBadge = (
+        <span className="inline-flex items-center gap-1 text-[11px] text-slate-700 font-medium bg-slate-100 px-2.5 py-0.5 rounded-full border border-slate-200" title="Generated using rule-based local analysis engine">
+          <Cpu size={11} className="text-slate-500 shrink-0" />
+          Rule-based Engine
+        </span>
+      );
+    }
+  }
+
   return (
-    <div className={`bg-blue-50/70 border border-blue-200/90 rounded-xl p-5 shadow-2xs ${className}`}>
-      <div className="flex items-center justify-between mb-2">
+    <div className={`bg-blue-50/70 border border-blue-200/90 rounded-2xl p-5 shadow-2xs ${className}`}>
+      <div className="flex items-center justify-between mb-2.5">
         <div className="flex items-center gap-2 text-[#1e3a8a] font-bold text-xs uppercase tracking-wider">
-          <Sparkles size={14} className="text-blue-600 shrink-0" />
+          <div className="h-6 w-6 rounded-md bg-blue-600 flex items-center justify-center text-white shrink-0 shadow-xs">
+            <Sparkles size={13} />
+          </div>
           <span>{title}</span>
         </div>
-        <span className="text-[11px] text-blue-600 font-medium bg-blue-100/60 px-2 py-0.5 rounded-full">
-          Automated
-        </span>
+        <div>
+          {sourceBadge}
+        </div>
       </div>
       <p className="text-sm text-slate-800 leading-relaxed font-normal break-words whitespace-normal">
         {summary}

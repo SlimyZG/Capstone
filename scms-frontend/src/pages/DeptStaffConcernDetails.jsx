@@ -161,6 +161,7 @@ const DeptStaffConcernDetails = () => {
               confidence={concern.classification_confidence}
               showConfidence={true}
               size="sm"
+              workflowType={concern.workflow_type}
             />
           )}
           <span className="px-2.5 py-0.5 bg-slate-100 text-slate-600 rounded-full text-xs font-mono font-bold">
@@ -179,7 +180,7 @@ const DeptStaffConcernDetails = () => {
 
           {/* AI Summary Card */}
           {concern.ai_summary && (
-            <AiSummaryCard summary={concern.ai_summary} />
+            <AiSummaryCard summary={concern.ai_summary} metadata={concern.ai_metadata} />
           )}
 
           {/* Original Request Details */}

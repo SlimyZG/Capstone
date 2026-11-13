@@ -236,15 +236,7 @@ const DeanConcernDetails = () => {
           
           {/* AI Issue Summary if present */}
           {concern.ai_summary && (
-            <div className="bg-blue-50 border border-blue-200 rounded-2xl p-5">
-              <div className="flex items-center gap-2 mb-2">
-                <div className="h-6 w-6 rounded-md bg-blue-600 flex items-center justify-center text-white">
-                  <Sparkles size={13} />
-                </div>
-                <span className="text-xs font-bold text-blue-900 uppercase tracking-wider">AI Summary</span>
-              </div>
-              <p className="text-sm text-blue-900 leading-relaxed break-words whitespace-normal">{concern.ai_summary}</p>
-            </div>
+            <AiSummaryCard summary={concern.ai_summary} metadata={concern.ai_metadata} />
           )}
 
           {/* Concern Description */}
