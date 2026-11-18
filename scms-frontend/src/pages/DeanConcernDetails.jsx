@@ -24,6 +24,7 @@ import AiCategoryBadge from '../components/AiCategoryBadge';
 import AiSummaryCard from '../components/AiSummaryCard';
 import SlaStatusBadge from '../components/SlaStatusBadge';
 import SlaTrackingCard from '../components/SlaTrackingCard';
+import ConcernAttachments from '../components/ConcernAttachments';
 
 const DeanConcernDetails = () => {
   const { id } = useParams();
@@ -248,27 +249,11 @@ const DeanConcernDetails = () => {
 
             {concern.attachments && concern.attachments.length > 0 && (
               <div className="mt-5 pt-4 border-t border-slate-100">
-                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Attachments ({concern.attachments.length})</p>
-                <div className="flex flex-wrap gap-2">
-                  {concern.attachments.map((att, idx) => {
-                    const filePath = typeof att === 'string' ? att : (att?.file_path || att?.path || '');
-                    const fileName = typeof att === 'string' ? `Attachment ${idx + 1}` : (att?.file_name || att?.name || `Attachment ${idx + 1}`);
-                    if (!filePath) return null;
-                    const fullUrl = filePath.startsWith('http') ? filePath : `http://localhost:8000${filePath.startsWith('/') ? '' : '/'}${filePath}`;
-                    return (
-                      <a
-                        key={idx}
-                        href={fullUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-medium text-slate-700 hover:bg-slate-50 shadow-sm"
-                      >
-                        <Paperclip size={12} className="text-slate-400" />
-                        {fileName}
-                      </a>
-                    );
-                  })}
-                </div>
+                <ConcernAttachments
+                  concernId={concern.concern_id}
+                  attachments={concern.attachments}
+                  titleClassName="text-xs font-bold text-slate-400 uppercase tracking-wider"
+                />
               </div>
             )}
           </div>

@@ -691,4 +691,75 @@ class SaoOversightController extends Controller
             'Cache-Control' => 'private, no-cache, no-store, must-revalidate',
         ], 'inline');
     }
+
+    /**
+     * Export SAO authorized concerns as a CSV download.
+     * Strictly enforces Option A: exports only concerns assigned to or involving the Student Affairs Office.
+     */
+    public function exportSaoCsv(Request $request)
+    {
+        $validated = $request->validate([
+            'date_from' => 'nullable|date',
+            'date_to'   => 'nullable|date|after_or_equal:date_from',
+            'status'    => 'nullable|in:pending,in_progress,escalated,approved,rejected,returned,resolved,closed,withdrawn',
+            'priority'  => 'nullable|in:critical,high,medium,low',
+            'category'  => 'nullable|string|max:120',
+        ]);
+
+        $saoDept = Department::where('name', 'like', '%SAO%')
+            ->orWhere('name', 'like', '%Student Affairs%')
+            ->first();
+
+        if (!$saoDept) {
+            $base = Concern::whereRaw('1 = 0');
+        } else {
+            $routedIds = ConcernRouting::where(function ($q) {
+                $q->where('notes', 'like', '%SAO%')
+                  ->orWhere('notes', 'like', '%Student Affairs%');
+            })->pluck('concern_id');
+
+            $base = Concern::where(function ($q) use ($saoDept, $routedIds) {
+                $q->where('dept_id', $saoDept->id);
+                if ($routedIds->isNotEmpty()) {
+                    $q->orWhereIn('concern_id', $routedIds);
+                }
+            });
+        }
+
+        if (!empty($validated['date_from'])) {
+            $base->where('submitted_at', '>=', Carbon::parse($validated['date_from'])->startOfDay());
+        }
+        if (!empty($validated['date_to'])) {
+            $base->where('submitted_at', '<=', Carbon::parse($validated['date_to'])->endOfDay());
+        }
+        if (!empty($validated['status'])) {
+            $base->where('status', $validated['status']);
+        }
+        if (!empty($validated['priority'])) {
+            $base->where('priority', $validated['priority']);
+        }
+        if (!empty($validated['category'])) {
+            $catFilter = $validated['category'];
+            $rawAliases = [$catFilter];
+            if ($catFilter === 'Academic Concerns') {
+                $rawAliases[] = 'academic_units';
+            } elseif ($catFilter === 'Operational Departments') {
+                $rawAliases[] = 'operational_departments';
+            }
+            $base->where(function ($q) use ($rawAliases) {
+                $q->whereIn('issue_category', $rawAliases)
+                  ->orWhereIn('category', $rawAliases);
+            });
+        }
+
+        $concerns = $base
+            ->with(['student:id,name,student_id_number', 'academicUnit', 'department', 'routingHistory'])
+            ->orderBy('submitted_at', 'desc')
+            ->get();
+
+        return \App\Support\CsvExportHelper::streamConcernsCsv(
+            $concerns,
+            'sao_assigned_concerns_' . now()->format('Y-m-d') . '.csv'
+        );
+    }
 }

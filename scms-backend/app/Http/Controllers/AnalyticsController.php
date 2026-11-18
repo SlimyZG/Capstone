@@ -934,7 +934,7 @@ class AnalyticsController extends Controller
         $validated = $request->validate([
             'date_from'     => 'nullable|date',
             'date_to'       => 'nullable|date|after_or_equal:date_from',
-            'status'        => 'nullable|in:pending,in_progress,escalated,approved,rejected,resolved,closed,withdrawn',
+            'status'        => 'nullable|in:pending,in_progress,escalated,approved,rejected,returned,resolved,closed,withdrawn',
             'priority'      => 'nullable|in:critical,high,medium,low',
             'workflow_type' => 'nullable|in:academic,non_academic',
             'category'      => 'nullable|string|max:120',
@@ -974,10 +974,10 @@ class AnalyticsController extends Controller
 
         // Apply filters
         if (!empty($validated['date_from'])) {
-            $base->where('submitted_at', '>=', $validated['date_from']);
+            $base->where('submitted_at', '>=', \Carbon\Carbon::parse($validated['date_from'])->startOfDay());
         }
         if (!empty($validated['date_to'])) {
-            $base->where('submitted_at', '<=', $validated['date_to'] . ' 23:59:59');
+            $base->where('submitted_at', '<=', \Carbon\Carbon::parse($validated['date_to'])->endOfDay());
         }
         if (!empty($validated['status'])) {
             $base->where('status', $validated['status']);
@@ -1266,17 +1266,23 @@ class AnalyticsController extends Controller
 
         $hasSentimentData = $sentimentBreakdown->isNotEmpty();
 
-        // Recent concerns list (latest 50 for the report table)
+        $user->loadMissing(['academicUnit', 'department']);
+        $assignedScopeName = $user->academicUnit?->name
+            ? $user->academicUnit->name
+            : ($user->department?->name ?? 'Academic Unit');
+
+        // Recent concerns list (up to 500 matching records for the report table)
         $concerns = (clone $base)
-            ->with(['student:id,name,student_id_number', 'academicUnit', 'department'])
+            ->with(['student:id,name,student_id_number', 'academicUnit', 'department', 'routingHistory'])
             ->orderBy('submitted_at', 'desc')
-            ->take(50)
+            ->take(500)
             ->get()
             ->map(function ($c) {
                 if ($c->is_anonymous && $c->student) {
                     $c->student->name              = 'Anonymous';
                     $c->student->student_id_number = '********';
                 }
+                $c->resolution_notes = \App\Support\CsvExportHelper::extractResolutionDetails($c);
                 return $c;
             });
 
@@ -1412,6 +1418,16 @@ class AnalyticsController extends Controller
             ] : null,
             'concerns'             => $concerns,
             'resolution_analytics' => $resolutionAnalytics,
+            'report_metadata'      => [
+                'institution_name'   => 'University of Cebu Lapu-Lapu and Mandaue',
+                'system_name'        => 'Student Concern Management System',
+                'report_title'       => 'Academic Unit Concern Report',
+                'assigned_scope'     => $assignedScopeName,
+                'department_name'    => $user->department?->name,
+                'academic_unit_name' => $user->academicUnit?->name,
+                'generated_by'       => $user->name,
+                'generated_by_role'  => 'Dean',
+            ],
             'generated_at'         => now()->toISOString(),
             'filters_applied'      => array_filter($validated),
         ]);
@@ -1428,7 +1444,7 @@ class AnalyticsController extends Controller
         $validated = $request->validate([
             'date_from'     => 'nullable|date',
             'date_to'       => 'nullable|date|after_or_equal:date_from',
-            'status'        => 'nullable|in:pending,in_progress,escalated,approved,rejected,resolved,closed,withdrawn',
+            'status'        => 'nullable|in:pending,in_progress,escalated,approved,rejected,returned,resolved,closed,withdrawn',
             'priority'      => 'nullable|in:critical,high,medium,low',
             'workflow_type' => 'nullable|in:academic,non_academic',
             'category'      => 'nullable|string|max:120',
@@ -1450,10 +1466,10 @@ class AnalyticsController extends Controller
         }
 
         if (!empty($validated['date_from'])) {
-            $base->where('submitted_at', '>=', $validated['date_from']);
+            $base->where('submitted_at', '>=', \Carbon\Carbon::parse($validated['date_from'])->startOfDay());
         }
         if (!empty($validated['date_to'])) {
-            $base->where('submitted_at', '<=', $validated['date_to'] . ' 23:59:59');
+            $base->where('submitted_at', '<=', \Carbon\Carbon::parse($validated['date_to'])->endOfDay());
         }
         if (!empty($validated['status'])) {
             $base->where('status', $validated['status']);
@@ -1466,47 +1482,26 @@ class AnalyticsController extends Controller
         }
         if (!empty($validated['category'])) {
             $catFilter = $validated['category'];
-            $base->where(function ($q) use ($catFilter) {
-                $q->where('issue_category', $catFilter)
-                  ->orWhere('category', $catFilter);
+            $rawAliases = [$catFilter];
+            if ($catFilter === 'Academic Concerns') {
+                $rawAliases[] = 'academic_units';
+            } elseif ($catFilter === 'Operational Departments') {
+                $rawAliases[] = 'operational_departments';
+            }
+            $base->where(function ($q) use ($rawAliases) {
+                $q->whereIn('issue_category', $rawAliases)
+                  ->orWhereIn('category', $rawAliases);
             });
         }
 
         $concerns = $base
-            ->with(['student:id,name,student_id_number', 'academicUnit', 'department'])
+            ->with(['student:id,name,student_id_number', 'academicUnit', 'department', 'routingHistory'])
             ->orderBy('submitted_at', 'desc')
             ->get();
 
-        $headers = [
-            'Content-Type'        => 'text/csv',
-            'Content-Disposition' => 'attachment; filename="dean_report_' . now()->format('Y-m-d') . '.csv"',
-        ];
-
-        $callback = function () use ($concerns) {
-            $handle = fopen('php://output', 'w');
-            fputcsv($handle, [
-                'Concern ID', 'Title', 'Status', 'Priority', 'Workflow Type',
-                'Sentiment', 'Student', 'Department / Unit', 'Submitted At', 'Resolved At',
-            ]);
-            foreach ($concerns as $c) {
-                $studentName = $c->is_anonymous ? 'Anonymous' : ($c->student->name ?? 'N/A');
-                $deptName    = $c->department->name ?? $c->academicUnit->name ?? 'N/A';
-                fputcsv($handle, [
-                    $c->concern_id,
-                    $c->title,
-                    $c->status,
-                    $c->priority ?? 'N/A',
-                    $c->workflow_type ?? 'N/A',
-                    $c->sentiment_label ?? 'N/A',
-                    $studentName,
-                    $deptName,
-                    $c->submitted_at,
-                    $c->resolved_at ?? '',
-                ]);
-            }
-            fclose($handle);
-        };
-
-        return response()->stream($callback, 200, $headers);
+        return \App\Support\CsvExportHelper::streamConcernsCsv(
+            $concerns,
+            'dean_report_' . now()->format('Y-m-d') . '.csv'
+        );
     }
 }

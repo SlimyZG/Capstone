@@ -6,7 +6,8 @@ import {
   Inbox,
   Eye,
   Sliders,
-  FolderOpen
+  FolderOpen,
+  Download
 } from 'lucide-react';
 import api from '../api';
 import PageHeader from '../components/PageHeader';
@@ -27,7 +28,34 @@ const SaoAssignedConcerns = () => {
   const [priority, setPriority] = useState('');
   const [saoDept, setSaoDept] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
+  const [exporting, setExporting] = useState(false);
   const navigate = useNavigate();
+
+  const handleExportCsv = async () => {
+    setExporting(true);
+    try {
+      const params = {};
+      if (status) params.status = status;
+      if (priority) params.priority = priority;
+      const res = await api.get('/sao/reports/export-csv', {
+        params,
+        responseType: 'blob',
+      });
+      const blob = new Blob([res.data], { type: 'text/csv;charset=utf-8;' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `sao_assigned_concerns_${new Date().toISOString().slice(0, 10)}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Failed to export SAO CSV:', err);
+    } finally {
+      setExporting(false);
+    }
+  };
 
   useEffect(() => {
     fetchAssignedConcerns(currentPage);
@@ -147,6 +175,15 @@ const SaoAssignedConcerns = () => {
               Assigned Cases ({pagination?.total || concerns.length})
             </h2>
           </div>
+          <button
+            type="button"
+            onClick={handleExportCsv}
+            disabled={exporting}
+            className="btn-secondary text-xs py-1.5 px-3 inline-flex items-center gap-1.5"
+          >
+            <Download size={14} />
+            <span>{exporting ? 'Exporting…' : 'Export CSV'}</span>
+          </button>
         </div>
 
         <div className="overflow-x-auto">

@@ -3,6 +3,7 @@ import StatusBadge from './StatusBadge';
 import PriorityBadge from './PriorityBadge';
 import SentimentBadge from './SentimentBadge';
 import AiCategoryBadge from './AiCategoryBadge';
+import ConcernAttachments from './ConcernAttachments';
 import { Paperclip, MessageSquare, ArrowRightLeft, ArrowUpRight, CheckCircle2, RotateCcw } from 'lucide-react';
 
 const ConcernCard = ({ concern, onAction, role, onViewMessages }) => {
@@ -171,23 +172,12 @@ const ConcernCard = ({ concern, onAction, role, onViewMessages }) => {
 
       {concern.attachments && concern.attachments.length > 0 && (
         <div className="mb-4">
-          <h4 className="text-xs font-bold text-slate-600 uppercase tracking-wider mb-2">Attachments:</h4>
-          <div className="flex flex-wrap gap-2.5">
-            {concern.attachments.map((path, idx) => {
-              const isImage = path.match(/\.(jpeg|jpg|gif|png)$/i);
-              const fullUrl = `http://localhost:8000${path}`;
-              return isImage ? (
-                <a key={idx} href={fullUrl} target="_blank" rel="noopener noreferrer" className="block border border-slate-200 rounded-lg overflow-hidden hover:border-blue-400 transition-colors">
-                  <img src={fullUrl} alt={`Attachment ${idx + 1}`} className="h-16 w-auto object-cover" />
-                </a>
-              ) : (
-                <a key={idx} href={fullUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 rounded-lg text-xs font-semibold text-blue-600 hover:bg-blue-50 transition-colors">
-                  <Paperclip size={13} />
-                  <span>Document {idx + 1}</span>
-                </a>
-              );
-            })}
-          </div>
+          <ConcernAttachments
+            concernId={concern.concern_id}
+            attachments={concern.attachments}
+            compact={true}
+            titleClassName="text-xs font-bold text-slate-600 uppercase tracking-wider"
+          />
         </div>
       )}
 

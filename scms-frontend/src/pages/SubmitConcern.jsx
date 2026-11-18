@@ -431,7 +431,7 @@ const SubmitConcern = () => {
               <input
                 type="file"
                 multiple
-                accept="image/*,.pdf,.doc,.docx"
+                accept="image/*,video/mp4,video/webm,video/quicktime,video/x-msvideo,.pdf,.doc,.docx"
                 onChange={(e) => setAttachments(e.target.files)}
                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
               />
@@ -440,7 +440,7 @@ const SubmitConcern = () => {
                 <p className="text-sm font-semibold text-slate-700">
                   <span className="text-blue-600">Click to upload</span> or drag and drop
                 </p>
-                <p className="text-xs text-slate-500 mt-1">PNG, JPG, PDF, or DOC files (max 5MB each)</p>
+                <p className="text-xs text-slate-500 mt-1">PNG, JPG, GIF, WEBP, MP4, WEBM, MOV, PDF, or DOC files (max 20MB each)</p>
               </div>
 
               {attachments.length > 0 && (

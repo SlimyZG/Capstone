@@ -39,6 +39,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/notifications/{id}/read', [\App\Http\Controllers\NotificationController::class, 'markAsRead']);
     Route::post('/notifications/read-all', [\App\Http\Controllers\NotificationController::class, 'markAllAsRead']);
 
+    // Authenticated Private Attachment Streaming (Role & Scope Verified in Controller)
+    Route::get('/concerns/{id}/attachments/{index}', [ConcernController::class, 'showAttachment'])->whereNumber(['id', 'index']);
+
     // ── Admin & SAO Account Management Routes ──────────────────────────
     Route::middleware('role:admin,sao')->prefix('admin')->group(function () {
         Route::post('/create-account', [AdminController::class, 'createAccount']);
@@ -56,7 +59,10 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/users/{id}/deactivate', [\App\Http\Controllers\SaoUserController::class, 'deactivate']);
         Route::get('/oversight', [\App\Http\Controllers\SaoOversightController::class, 'getOversight']);
         Route::get('/assigned-concerns', [\App\Http\Controllers\SaoOversightController::class, 'assignedConcerns']);
+        Route::get('/assigned-concerns/export-csv', [\App\Http\Controllers\SaoOversightController::class, 'exportSaoCsv']);
+        Route::get('/reports/export-csv', [\App\Http\Controllers\SaoOversightController::class, 'exportSaoCsv']);
         Route::get('/concerns/{id}', [\App\Http\Controllers\SaoOversightController::class, 'showConcern']);
+        Route::get('/concerns/{id}/attachments/{index}', [ConcernController::class, 'showAttachment'])->whereNumber(['id', 'index']);
         Route::get('/concerns/{id}/cad/signed-document', [\App\Http\Controllers\SaoOversightController::class, 'downloadCadSignedDocument']);
         Route::post('/concerns/{id}/priority-override', [\App\Http\Controllers\SaoOversightController::class, 'priorityOverride']);
         Route::post('/concerns/{id}/reply', [\App\Http\Controllers\SaoOversightController::class, 'reply']);
@@ -82,6 +88,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::middleware('role:dept_staff')->prefix('dept-staff')->group(function () {
         Route::get('/queue', [DeptStaffController::class, 'queue']);
         Route::get('/concerns/{id}', [DeptStaffController::class, 'show']);
+        Route::get('/concerns/{id}/attachments/{index}', [ConcernController::class, 'showAttachment'])->whereNumber(['id', 'index']);
         Route::post('/concerns/{id}/reply', [DeptStaffController::class, 'reply']);
         Route::post('/concerns/{id}/transfer', [DeptStaffController::class, 'transfer']);
         Route::post('/concerns/{id}/resolve', [DeptStaffController::class, 'resolve']);
@@ -108,6 +115,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::middleware('role:dean')->prefix('dean')->group(function () {
         Route::get('/inbox', [DeanController::class, 'inbox']);
         Route::get('/concerns/{id}', [DeanController::class, 'show']);
+        Route::get('/concerns/{id}/attachments/{index}', [ConcernController::class, 'showAttachment'])->whereNumber(['id', 'index']);
         Route::post('/concerns/{id}/approve', [DeanController::class, 'approve']);
         Route::post('/concerns/{id}/return', [DeanController::class, 'returnForAction']);
         Route::post('/concerns/{id}/reject', [DeanController::class, 'reject']);

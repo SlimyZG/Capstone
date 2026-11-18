@@ -63,9 +63,9 @@ const DeptStaffLayout = ({ children }) => {
   );
 
   return (
-    <div className="min-h-screen bg-[#f8fafc] flex">
+    <div className="min-h-screen bg-[#f8fafc] print:bg-white print:min-h-0 flex print:block">
       {/* Desktop Sidebar */}
-      <aside className="w-64 bg-white border-r border-slate-200 flex-col hidden md:flex shrink-0">
+      <aside className="w-64 bg-white border-r border-slate-200 flex-col hidden md:flex print:hidden shrink-0">
         <div className="p-6 border-b border-slate-100">
           <div className="flex items-center gap-3">
             <div className="h-10 w-10 bg-[#1e3a8a] text-white rounded-lg flex items-center justify-center font-bold text-sm shrink-0 shadow-xs">
@@ -151,9 +151,9 @@ const DeptStaffLayout = ({ children }) => {
       </aside>
 
       {/* Main Content Area */}
-      <main className="flex-1 flex flex-col min-w-0">
+      <main className="flex-1 flex flex-col min-w-0 print:block">
         {/* Top Header */}
-        <header className="h-16 border-b border-slate-200 flex items-center justify-between px-4 sm:px-6 bg-white sticky top-0 z-30 shadow-2xs">
+        <header className="h-16 border-b border-slate-200 flex items-center justify-between px-4 sm:px-6 bg-white sticky top-0 z-30 shadow-2xs print:hidden">
           <div className="flex items-center gap-3">
             <button
               onClick={() => setMobileMenuOpen(true)}
@@ -185,8 +185,8 @@ const DeptStaffLayout = ({ children }) => {
         </header>
 
         {/* Page Content */}
-        <div className="flex-1 overflow-auto bg-[#f8fafc] p-4 sm:p-6 lg:p-8">
-          <div className="max-w-7xl mx-auto">
+        <div className="flex-1 overflow-auto bg-[#f8fafc] p-4 sm:p-6 lg:p-8 print:overflow-visible print:bg-white print:p-0">
+          <div className="max-w-7xl mx-auto print:max-w-none">
             {children || <Outlet />}
           </div>
         </div>

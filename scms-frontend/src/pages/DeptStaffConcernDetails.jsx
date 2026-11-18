@@ -12,6 +12,7 @@ import SlaStatusBadge from '../components/SlaStatusBadge';
 import SlaTrackingCard from '../components/SlaTrackingCard';
 import CadApprovalDocumentModal from '../components/CadApprovalDocumentModal';
 import CadDecisionUploadModal from '../components/CadDecisionUploadModal';
+import ConcernAttachments from '../components/ConcernAttachments';
 
 const DeptStaffConcernDetails = () => {
   const { id } = useParams();
@@ -225,29 +226,10 @@ const DeptStaffConcernDetails = () => {
                 {concern.description}
               </div>
               {concern.attachments && concern.attachments.length > 0 && (
-                <div>
-                  <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Attachments ({concern.attachments.length})</p>
-                  <div className="flex flex-wrap gap-2">
-                    {concern.attachments.map((att, i) => {
-                      const filePath = typeof att === 'string' ? att : (att?.file_path || att?.path || '');
-                      const fileName = typeof att === 'string' ? `Attachment ${i + 1}` : (att?.file_name || att?.name || `Attachment ${i + 1}`);
-                      if (!filePath) return null;
-                      const fullUrl = filePath.startsWith('http') ? filePath : `http://localhost:8000${filePath.startsWith('/') ? '' : '/'}${filePath}`;
-                      return (
-                        <a
-                          key={i}
-                          href={fullUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="btn-secondary py-1.5 px-3 text-xs inline-flex items-center gap-1.5 text-blue-600 hover:text-blue-800"
-                        >
-                          <Paperclip size={13} />
-                          <span>{fileName}</span>
-                        </a>
-                      );
-                    })}
-                  </div>
-                </div>
+                <ConcernAttachments
+                  concernId={concern.concern_id}
+                  attachments={concern.attachments}
+                />
               )}
             </div>
           </div>

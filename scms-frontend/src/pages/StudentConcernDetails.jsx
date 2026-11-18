@@ -6,6 +6,7 @@ import api from '../api';
 import StatusBadge from '../components/StatusBadge';
 import AiCategoryBadge from '../components/AiCategoryBadge';
 import AiSummaryCard from '../components/AiSummaryCard';
+import ConcernAttachments from '../components/ConcernAttachments';
 
 const StudentConcernDetails = () => {
   const { id } = useParams();
@@ -452,27 +453,11 @@ const StudentConcernDetails = () => {
 
               {concern.attachments && concern.attachments.length > 0 && (
                 <div className="mt-6">
-                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Attachments</p>
-                  <div className="flex flex-wrap gap-2">
-                    {concern.attachments.map((att, idx) => {
-                      const filePath = typeof att === 'string' ? att : (att?.file_path || att?.path || '');
-                      const fileName = typeof att === 'string' ? `Attachment ${idx + 1}` : (att?.file_name || att?.name || `Attachment ${idx + 1}`);
-                      if (!filePath) return null;
-                      const fullUrl = filePath.startsWith('http') ? filePath : `http://localhost:8000${filePath.startsWith('/') ? '' : '/'}${filePath}`;
-                      return (
-                        <a 
-                          key={idx} 
-                          href={fullUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex items-center px-3 py-1.5 bg-blue-50 text-blue-700 rounded-full text-xs font-medium border border-blue-100 hover:bg-blue-100 transition-colors"
-                        >
-                          <Paperclip size={12} className="mr-1.5" />
-                          {fileName}
-                        </a>
-                      );
-                    })}
-                  </div>
+                  <ConcernAttachments
+                    concernId={concern.concern_id}
+                    attachments={concern.attachments}
+                    titleClassName="text-xs font-bold text-slate-400 uppercase tracking-wider"
+                  />
                 </div>
               )}
             </div>

@@ -76,7 +76,7 @@ class ConcernController extends Controller
             'target_type' => 'nullable|in:department,dean',
             'dept_id' => 'required_if:workflow_type,non_academic|nullable|exists:departments,id',
             'is_anonymous' => 'boolean',
-            'attachments.*' => 'nullable|file|mimes:jpeg,png,jpg,pdf,doc,docx|max:5120',
+            'attachments.*' => 'nullable|file|mimes:jpeg,png,jpg,gif,webp,mp4,webm,mov,avi,pdf,doc,docx|max:20480',
         ]);
 
         $user = $request->user();
@@ -128,9 +128,14 @@ class ConcernController extends Controller
 
         $attachmentPaths = [];
         if ($request->hasFile('attachments')) {
-            foreach ($request->file('attachments') as $file) {
-                $path = $file->store('attachments', 'public');
-                $attachmentPaths[] = '/storage/' . $path;
+            foreach (array_values($request->file('attachments')) as $idx => $file) {
+                $ext = strtolower($file->getClientOriginalExtension() ?: $file->extension() ?: 'bin');
+                $origName = pathinfo($file->getClientOriginalName(), PATHINFO_FILENAME);
+                $safeName = preg_replace('/[^A-Za-z0-9._-]/', '_', (string) $origName);
+                $safeName = substr(trim($safeName, '_.-') ?: 'attachment', 0, 60);
+                $filename = sprintf('att_%d_%d_%s_%s.%s', $concern->concern_id, $idx, uniqid(), $safeName, $ext);
+                $path = $file->storeAs("attachments/{$concern->concern_id}", $filename, 'local');
+                $attachmentPaths[] = $path;
             }
             $concern->update(['attachments' => $attachmentPaths]);
         }
@@ -577,5 +582,144 @@ class ConcernController extends Controller
             'message' => 'Concern reopened successfully.',
             'concern' => $concern->fresh(['academicUnit', 'department']),
         ]);
+    }
+
+    /**
+     * Stream an attachment belonging to a concern after enforcing strict role-based authorization.
+     * Supports private storage ('local' disk) as well as legacy attachments ('public' disk).
+     */
+    public function showAttachment(Request $request, int $id, int $index)
+    {
+        $user = $request->user();
+        if (!$user) {
+            return response()->json(['message' => 'Unauthenticated.'], 401);
+        }
+
+        $concern = Concern::find($id);
+        if (!$concern) {
+            return response()->json(['message' => 'Concern not found.'], 404);
+        }
+
+        if (!$this->isAuthorizedForAttachment($user, $concern)) {
+            return response()->json([
+                'message' => 'Unauthorized. You do not have permission to access attachments for this concern.',
+            ], 403);
+        }
+
+        $attachments = is_array($concern->attachments) ? array_values($concern->attachments) : [];
+        if ($index < 0 || !array_key_exists($index, $attachments)) {
+            return response()->json(['message' => 'Attachment not found.'], 404);
+        }
+
+        $entry = $attachments[$index];
+        $rawPath = is_string($entry)
+            ? $entry
+            : (string) ($entry['file_path'] ?? $entry['path'] ?? '');
+
+        if ($rawPath === '' || str_contains($rawPath, '..') || str_contains($rawPath, "\0")) {
+            return response()->json(['message' => 'Attachment file not found.'], 404);
+        }
+
+        // Normalize legacy "/storage/attachments/..." and private "attachments/..." paths
+        $relativePath = ltrim((string) preg_replace('#^/?storage/#i', '', str_replace('\\', '/', $rawPath)), '/');
+        if ($relativePath === '' || str_contains($relativePath, '..')) {
+            return response()->json(['message' => 'Attachment file not found.'], 404);
+        }
+
+        $disk = null;
+        if (\Illuminate\Support\Facades\Storage::disk('local')->exists($relativePath)) {
+            $disk = \Illuminate\Support\Facades\Storage::disk('local');
+        } elseif (\Illuminate\Support\Facades\Storage::disk('public')->exists($relativePath)) {
+            $disk = \Illuminate\Support\Facades\Storage::disk('public');
+        }
+
+        if (!$disk) {
+            return response()->json(['message' => 'Attachment file could not be found in storage.'], 404);
+        }
+
+        $extension = strtolower(pathinfo($relativePath, PATHINFO_EXTENSION) ?: '');
+        $mimeMap = [
+            'jpg'  => 'image/jpeg',
+            'jpeg' => 'image/jpeg',
+            'png'  => 'image/png',
+            'gif'  => 'image/gif',
+            'webp' => 'image/webp',
+            'mp4'  => 'video/mp4',
+            'webm' => 'video/webm',
+            'mov'  => 'video/quicktime',
+            'avi'  => 'video/x-msvideo',
+            'mkv'  => 'video/x-matroska',
+            'pdf'  => 'application/pdf',
+            'doc'  => 'application/msword',
+            'docx' => 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        ];
+
+        $mimeType = $mimeMap[$extension] ?? ($disk->mimeType($relativePath) ?: 'application/octet-stream');
+        $basename = basename($relativePath) ?: ('attachment_' . ($index + 1) . ($extension ? ".{$extension}" : ''));
+
+        return $disk->response($relativePath, $basename, [
+            'Content-Type'           => $mimeType,
+            'Cache-Control'          => 'private, no-cache, no-store, must-revalidate',
+            'X-Content-Type-Options' => 'nosniff',
+            'Accept-Ranges'          => 'bytes',
+        ], 'inline');
+    }
+
+    /**
+     * Evaluate whether the authenticated user is authorized to view attachments of the given concern.
+     */
+    private function isAuthorizedForAttachment(\App\Models\User $user, Concern $concern): bool
+    {
+        return match ($user->role) {
+            'student' => (int) $concern->student_id === (int) $user->id,
+
+            'dept_staff' => (function () use ($user, $concern): bool {
+                if ($user->dept_id && (int) $concern->dept_id === (int) $user->dept_id) {
+                    return true;
+                }
+                if ($user->academic_unit_id && (int) $concern->academic_unit_id === (int) $user->academic_unit_id) {
+                    $isAcademic = $concern->workflow_type === 'academic'
+                        || ($concern->category === 'academic_units' && is_null($concern->dept_id));
+                    if ($isAcademic) {
+                        return true;
+                    }
+                }
+                return false;
+            })(),
+
+            'dean' => (function () use ($user, $concern): bool {
+                if (!$user->academic_unit_id || (int) $concern->academic_unit_id !== (int) $user->academic_unit_id) {
+                    return false;
+                }
+                $isAcademic = $concern->workflow_type === 'academic' || $concern->category === 'academic_units';
+                if (!$isAcademic) {
+                    return false;
+                }
+                return $concern->target_type === 'dean'
+                    || in_array($concern->status, ['escalated', 'approved', 'returned', 'rejected', 'resolved'], true);
+            })(),
+
+            'sao' => (function () use ($concern): bool {
+                $saoDept = \App\Models\Department::where('name', 'like', '%SAO%')
+                    ->orWhere('name', 'like', '%Student Affairs%')
+                    ->first();
+                if ($saoDept && (int) $concern->dept_id === (int) $saoDept->id) {
+                    return true;
+                }
+                if ($saoDept) {
+                    return ConcernRouting::where('concern_id', $concern->concern_id)
+                        ->where(function ($q) {
+                            $q->where('notes', 'like', '%SAO%')
+                              ->orWhere('notes', 'like', '%Student Affairs%');
+                        })
+                        ->exists();
+                }
+                return false;
+            })(),
+
+            'admin' => true,
+
+            default => false,
+        };
     }
 }

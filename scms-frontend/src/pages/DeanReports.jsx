@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../contexts/AuthContext';
 import {
   FileText,
   Download,
@@ -18,11 +19,14 @@ import {
   AlertCircle,
   Calendar,
   CheckCircle2,
+  Printer,
+  Eye,
 } from 'lucide-react';
 import api from '../api';
 import StatusBadge from '../components/StatusBadge';
 import PriorityBadge from '../components/PriorityBadge';
 import ResolutionAnalyticsSection from '../components/ResolutionAnalyticsSection';
+import PrintableConcernReport from '../components/PrintableConcernReport';
 
 // ─── Formatting Helpers ──────────────────────────────────────────────────────
 
@@ -113,6 +117,7 @@ function HorizontalBreakdownBar({ label, count, total, color = 'bg-[#2563EB]', b
 
 const DeanReports = () => {
   const navigate = useNavigate();
+  const { user } = useAuth();
 
   const [periodPreset, setPeriodPreset] = useState('all');
   const [filters, setFilters] = useState({
@@ -124,11 +129,12 @@ const DeanReports = () => {
     category:      '',
   });
 
-  const [report, setReport]       = useState(null);
-  const [loading, setLoading]     = useState(false);
-  const [exporting, setExporting] = useState(false);
-  const [error, setError]         = useState(null);
-  const [generated, setGenerated] = useState(false);
+  const [report, setReport]                   = useState(null);
+  const [loading, setLoading]                 = useState(false);
+  const [exporting, setExporting]             = useState(false);
+  const [error, setError]                     = useState(null);
+  const [generated, setGenerated]             = useState(false);
+  const [showPrintPreview, setShowPrintPreview] = useState(false);
 
   const buildParams = useCallback((activeFilters = filters) => {
     const p = {};
@@ -169,6 +175,9 @@ const DeanReports = () => {
     }
     const next = { ...filters, [name]: value };
     setFilters(next);
+    if (!next.date_from || !next.date_to || next.date_from <= next.date_to) {
+      fetchReport(next);
+    }
   };
 
   const handlePresetSelect = (preset) => {
@@ -213,26 +222,43 @@ const DeanReports = () => {
 
   const exportCsv = async () => {
     setExporting(true);
+    setError(null);
     try {
-      const token = localStorage.getItem('token');
-      const params = new URLSearchParams(buildParams()).toString();
-      const url = `http://localhost:8000/api/dean/reports/export-csv${params ? '?' + params : ''}`;
-      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-      if (!res.ok) throw new Error('Export failed');
-      const blob = await res.blob();
+      const res = await api.get('/dean/reports/export-csv', {
+        params: buildParams(),
+        responseType: 'blob',
+      });
+      const blob = new Blob([res.data], { type: 'text/csv;charset=utf-8;' });
+      const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
-      link.href = URL.createObjectURL(blob);
-      link.download = `dean_report_${new Date().toISOString().slice(0, 10)}.csv`;
+      link.href = url;
+      link.setAttribute('download', `dean_report_${new Date().toISOString().slice(0, 10)}.csv`);
+      document.body.appendChild(link);
       link.click();
-      URL.revokeObjectURL(link.href);
-    } catch {
-      setError('CSV export failed. Please try again.');
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      let msg = 'CSV export failed. Please check your selected filters and try again.';
+      if (err.response?.data instanceof Blob) {
+        try {
+          const text = await err.response.data.text();
+          const parsed = JSON.parse(text);
+          if (parsed?.message) msg = parsed.message;
+        } catch {
+          // keep default message
+        }
+      } else if (err.response?.data?.message) {
+        msg = err.response.data.message;
+      }
+      setError(msg);
     } finally {
       setExporting(false);
     }
   };
 
-  const printReport = () => window.print();
+  const printReport = () => {
+    window.print();
+  };
 
   const {
     summary = {},
@@ -296,10 +322,22 @@ const DeanReports = () => {
             <>
               <button
                 type="button"
+                onClick={() => setShowPrintPreview((prev) => !prev)}
+                className={`flex items-center gap-2 px-3.5 py-2 border rounded-lg text-xs sm:text-sm font-semibold shadow-xs transition-colors ${
+                  showPrintPreview
+                    ? 'bg-blue-50 border-blue-300 text-[#1E3A8A]'
+                    : 'bg-white border-[#E2E8F0] text-[#0F172A] hover:bg-[#F8FAFC]'
+                }`}
+              >
+                <Eye size={15} className={showPrintPreview ? 'text-[#2563EB]' : 'text-[#64748B]'} />
+                {showPrintPreview ? 'Dashboard View' : 'Report Preview'}
+              </button>
+              <button
+                type="button"
                 onClick={printReport}
                 className="flex items-center gap-2 px-3.5 py-2 border border-[#E2E8F0] rounded-lg bg-white text-xs sm:text-sm font-semibold text-[#0F172A] hover:bg-[#F8FAFC] shadow-xs"
               >
-                <FileText size={15} className="text-[#64748B]" /> Print / PDF
+                <Printer size={15} className="text-[#64748B]" /> Print / PDF
               </button>
               <button
                 type="button"
@@ -321,14 +359,6 @@ const DeanReports = () => {
             {loading ? 'Updating…' : 'Generate Report'}
           </button>
         </div>
-      </div>
-
-      {/* ── Print Header ── */}
-      <div className="hidden print:block mb-4 pb-4 border-b border-slate-200">
-        <h1 className="text-2xl font-bold text-[#0F172A]">Dean&apos;s Academic Unit Concern Report</h1>
-        <p className="text-xs text-[#64748B] mt-1">
-          Reporting Period: {periodDescription} &bull; Generated: {generated_at ? new Date(generated_at).toLocaleString() : '—'}
-        </p>
       </div>
 
       {/* ── REPORT FILTERS (Section 7) ── */}
@@ -446,6 +476,7 @@ const DeanReports = () => {
               <option value="in_progress">In Progress</option>
               <option value="escalated">Escalated</option>
               <option value="approved">Approved</option>
+              <option value="returned">Returned</option>
               <option value="rejected">Rejected</option>
               <option value="resolved">Resolved</option>
               <option value="closed">Closed</option>
@@ -469,7 +500,7 @@ const DeanReports = () => {
 
       {/* ── Error Banner ── */}
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-700 flex items-center gap-2">
+        <div className="bg-red-50 border border-red-200 rounded-xl p-4 text-sm text-red-700 flex items-center gap-2 print:hidden">
           <AlertTriangle size={16} className="shrink-0" />
           <span>{error}</span>
         </div>
@@ -477,15 +508,28 @@ const DeanReports = () => {
 
       {/* ── Loading State ── */}
       {loading && (
-        <div className="bg-white rounded-xl border border-[#E2E8F0] shadow-sm flex items-center justify-center py-20 text-[#64748B]">
+        <div className="bg-white rounded-xl border border-[#E2E8F0] shadow-sm flex items-center justify-center py-20 text-[#64748B] print:hidden">
           <RefreshCw size={22} className="animate-spin mr-3 text-[#2563EB]" />
           <span className="text-sm font-medium">Calculating report metrics for your academic unit…</span>
         </div>
       )}
 
-      {/* ── Main Report Sections ── */}
+      {/* ── Dedicated Compact Printable / PDF Institutional Report ── */}
       {generated && report && !loading && (
-        <div className="space-y-6">
+        <PrintableConcernReport
+          report={report}
+          filters={filters}
+          periodDescription={periodDescription}
+          currentUser={user}
+          defaultReportTitle="Academic Unit Concern Report"
+          defaultScopeLabel={user?.academic_unit?.name || 'Academic Unit'}
+          previewMode={showPrintPreview}
+        />
+      )}
+
+      {/* ── Main Dashboard Report Sections (Hidden during print or when in Report Preview mode) ── */}
+      {generated && report && !loading && (
+        <div className={`${showPrintPreview ? 'hidden' : 'space-y-6'} print:hidden`}>
           {/* ── SECTION A: REPORT SUMMARY ── */}
           <div className="space-y-4">
             <div className="bg-white rounded-xl border border-[#E2E8F0] px-5 py-3.5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
