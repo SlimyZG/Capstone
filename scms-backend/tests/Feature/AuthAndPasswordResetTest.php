@@ -1,0 +1,298 @@
+<?php
+
+namespace Tests\Feature;
+
+use App\Models\AcademicUnit;
+use App\Models\ClassList;
+use App\Models\User;
+use App\Notifications\ResetPasswordNotification;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Facades\Password;
+use Illuminate\Support\Facades\RateLimiter;
+use Tests\TestCase;
+
+class AuthAndPasswordResetTest extends TestCase
+{
+    use RefreshDatabase;
+
+    private AcademicUnit $ccsUnit;
+    private AcademicUnit $marineUnit;
+    private User $student;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->ccsUnit = AcademicUnit::create(['name' => 'College of Computer Studies']);
+        $this->marineUnit = AcademicUnit::create(['name' => 'College of Marine Transportation']);
+
+        ClassList::create([
+            'student_id_number' => '20240001',
+            'academic_unit_id' => $this->ccsUnit->id,
+        ]);
+
+        $this->student = User::create([
+            'name' => 'Registered CCS Student',
+            'email' => 'student.reset@uclm.edu.ph',
+            'student_id_number' => '20240001',
+            'password' => Hash::make('OldPassword123!'),
+            'role' => 'student',
+            'academic_unit_id' => $this->ccsUnit->id,
+        ]);
+    }
+
+    public function test_requesting_password_reset_stores_hashed_token_and_sends_frontend_reset_link(): void
+    {
+        Notification::fake();
+        config(['app.frontend_url' => 'http://localhost:5173']);
+
+        $response = $this->postJson('/api/forgot-password', [
+            'email' => 'student.reset@uclm.edu.ph',
+        ]);
+
+        $response->assertOk()
+            ->assertJsonPath(
+                'message',
+                'If your email is registered in our system, you will receive a password reset link shortly.'
+            );
+
+        // Verify token record exists in password_reset_tokens and is hashed (never stored in plain text)
+        $tokenRow = DB::table('password_reset_tokens')
+            ->where('email', 'student.reset@uclm.edu.ph')
+            ->first();
+
+        $this->assertNotNull($tokenRow);
+        $this->assertNotEmpty($tokenRow->token);
+
+        $capturedToken = null;
+        Notification::assertSentTo(
+            $this->student,
+            ResetPasswordNotification::class,
+            function (ResetPasswordNotification $notification) use (&$capturedToken, $tokenRow) {
+                $capturedToken = $notification->token;
+                $this->assertNotSame($capturedToken, $tokenRow->token);
+                $this->assertTrue(Hash::check($capturedToken, $tokenRow->token));
+
+                $mailData = $notification->toMail($this->student);
+                $this->assertStringStartsWith(
+                    'http://localhost:5173/reset-password?token=',
+                    $mailData->actionUrl
+                );
+                $this->assertStringContainsString(
+                    'email=' . urlencode('student.reset@uclm.edu.ph'),
+                    $mailData->actionUrl
+                );
+                return true;
+            }
+        );
+
+        $this->assertNotNull($capturedToken);
+    }
+
+    public function test_nonexistent_email_returns_identical_generic_response_without_sending_notification(): void
+    {
+        Notification::fake();
+
+        $response = $this->postJson('/api/forgot-password', [
+            'email' => 'nonexistent.user@uclm.edu.ph',
+        ]);
+
+        $response->assertOk()
+            ->assertJsonPath(
+                'message',
+                'If your email is registered in our system, you will receive a password reset link shortly.'
+            );
+
+        Notification::assertNothingSent();
+        $this->assertDatabaseMissing('password_reset_tokens', [
+            'email' => 'nonexistent.user@uclm.edu.ph',
+        ]);
+    }
+
+    public function test_resetting_password_with_valid_token_updates_password_and_invalidates_token_against_reuse(): void
+    {
+        $rawToken = Password::broker()->createToken($this->student);
+
+        // 1. Validate reset token endpoint succeeds for valid token
+        $this->postJson('/api/reset-password/validate', [
+            'token' => $rawToken,
+            'email' => $this->student->email,
+        ])
+            ->assertOk()
+            ->assertJsonPath('valid', true);
+
+        // 2. Reset password with valid token
+        $resetResponse = $this->postJson('/api/reset-password', [
+            'token' => $rawToken,
+            'email' => $this->student->email,
+            'password' => 'NewSecurePass456!',
+            'password_confirmation' => 'NewSecurePass456!',
+        ]);
+
+        $resetResponse->assertOk();
+
+        // Verify password was updated with bcrypt/hashed representation
+        $this->student->refresh();
+        $this->assertTrue(Hash::check('NewSecurePass456!', $this->student->password));
+        $this->assertFalse(Hash::check('OldPassword123!', $this->student->password));
+
+        // Verify token row was deleted from password_reset_tokens
+        $this->assertDatabaseMissing('password_reset_tokens', [
+            'email' => $this->student->email,
+        ]);
+
+        // 3. Attempting to reuse the same token fails with 422
+        $this->postJson('/api/reset-password', [
+            'token' => $rawToken,
+            'email' => $this->student->email,
+            'password' => 'AnotherPassword789!',
+            'password_confirmation' => 'AnotherPassword789!',
+        ])->assertStatus(422);
+
+        $this->postJson('/api/reset-password/validate', [
+            'token' => $rawToken,
+            'email' => $this->student->email,
+        ])
+            ->assertStatus(422)
+            ->assertJsonPath('valid', false);
+
+        // 4. Student can log in with the new password (both by Student ID and by Email)
+        $this->postJson('/api/login', [
+            'login' => '20240001',
+            'password' => 'NewSecurePass456!',
+        ])->assertOk()->assertJsonStructure(['token', 'user']);
+
+        $this->postJson('/api/login', [
+            'login' => $this->student->email,
+            'password' => 'NewSecurePass456!',
+        ])->assertOk()->assertJsonStructure(['token', 'user']);
+    }
+
+    public function test_invalid_and_expired_password_reset_tokens_are_rejected(): void
+    {
+        $rawToken = Password::broker()->createToken($this->student);
+
+        // 1. Invalid token is rejected
+        $this->postJson('/api/reset-password/validate', [
+            'token' => 'invalid-forged-token-value',
+            'email' => $this->student->email,
+        ])
+            ->assertStatus(422)
+            ->assertJsonPath('valid', false);
+
+        $this->postJson('/api/reset-password', [
+            'token' => 'invalid-forged-token-value',
+            'email' => $this->student->email,
+            'password' => 'NewSecurePass456!',
+            'password_confirmation' => 'NewSecurePass456!',
+        ])->assertStatus(422);
+
+        // 2. Age the token past expiration (default 60 minutes -> backdate 65 minutes)
+        DB::table('password_reset_tokens')
+            ->where('email', $this->student->email)
+            ->update([
+                'created_at' => now()->subMinutes(65),
+            ]);
+
+        $this->postJson('/api/reset-password/validate', [
+            'token' => $rawToken,
+            'email' => $this->student->email,
+        ])
+            ->assertStatus(422)
+            ->assertJsonPath('valid', false);
+
+        $this->postJson('/api/reset-password', [
+            'token' => $rawToken,
+            'email' => $this->student->email,
+            'password' => 'NewSecurePass456!',
+            'password_confirmation' => 'NewSecurePass456!',
+        ])->assertStatus(422);
+
+        // Original password remains unchanged
+        $this->assertTrue(Hash::check('OldPassword123!', $this->student->fresh()->password));
+    }
+
+    public function test_forgot_password_and_reset_password_enforce_rate_limiting(): void
+    {
+        Notification::fake();
+        RateLimiter::clear('forgot-password:' . sha1($this->student->email . '|127.0.0.1'));
+
+        // First 3 requests within 1 minute return 200
+        for ($i = 0; $i < 3; $i++) {
+            $this->postJson('/api/forgot-password', [
+                'email' => $this->student->email,
+            ])->assertOk();
+        }
+
+        // 4th rapid request is rate-limited with HTTP 429
+        $this->postJson('/api/forgot-password', [
+            'email' => $this->student->email,
+        ])->assertStatus(429);
+
+        // Rate limiting on reset-password attempts (5 failed attempts -> 6th returns 429)
+        for ($i = 0; $i < 5; $i++) {
+            $this->postJson('/api/reset-password', [
+                'token' => 'wrong-token-' . $i,
+                'email' => $this->student->email,
+                'password' => 'NewPassword123!',
+                'password_confirmation' => 'NewPassword123!',
+            ])->assertStatus(422);
+        }
+
+        $this->postJson('/api/reset-password', [
+            'token' => 'wrong-token-6',
+            'email' => $this->student->email,
+            'password' => 'NewPassword123!',
+            'password_confirmation' => 'NewPassword123!',
+        ])->assertStatus(429);
+    }
+
+    public function test_student_registration_enforces_dean_class_list_and_academic_unit_verification(): void
+    {
+        ClassList::create([
+            'student_id_number' => '20249988',
+            'academic_unit_id' => $this->ccsUnit->id,
+        ]);
+
+        // 1. Unlisted Student ID cannot register
+        $this->postJson('/api/register', [
+            'name' => 'Unlisted Student',
+            'student_id_number' => '20247777',
+            'email' => 'unlisted@uclm.edu.ph',
+            'academic_unit_id' => $this->ccsUnit->id,
+            'password' => 'Password123!',
+            'password_confirmation' => 'Password123!',
+        ])->assertStatus(422)->assertJsonValidationErrors(['student_id_number']);
+
+        // 2. Listed Student ID cannot register under a different Academic Unit (Marine instead of CCS)
+        $this->postJson('/api/register', [
+            'name' => 'Mismatched Unit Student',
+            'student_id_number' => '20249988',
+            'email' => 'mismatched@uclm.edu.ph',
+            'academic_unit_id' => $this->marineUnit->id,
+            'password' => 'Password123!',
+            'password_confirmation' => 'Password123!',
+        ])->assertStatus(422)->assertJsonValidationErrors(['student_id_number']);
+
+        // 3. Listed Student ID with matching Academic Unit registers successfully
+        $regRes = $this->postJson('/api/register', [
+            'name' => 'Verified CCS Student',
+            'student_id_number' => '20249988',
+            'email' => 'verified.ccs@uclm.edu.ph',
+            'academic_unit_id' => $this->ccsUnit->id,
+            'password' => 'Password123!',
+            'password_confirmation' => 'Password123!',
+        ]);
+
+        $regRes->assertCreated()
+            ->assertJsonPath('user.student_id_number', '20249988')
+            ->assertJsonPath('user.academic_unit_id', $this->ccsUnit->id)
+            ->assertJsonPath('user.role', 'student');
+
+        // Passwords are never returned in API responses
+        $this->assertArrayNotHasKey('password', $regRes->json('user'));
+    }
+}

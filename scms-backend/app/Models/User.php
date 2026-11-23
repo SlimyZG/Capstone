@@ -120,4 +120,14 @@ class User extends Authenticatable
     {
         return $this->role === 'student';
     }
+
+    /**
+     * Send the password reset notification using the SCMS frontend reset URL.
+     *
+     * @param  string  $token
+     */
+    public function sendPasswordResetNotification($token): void
+    {
+        $this->notify(new \App\Notifications\ResetPasswordNotification($token));
+    }
 }

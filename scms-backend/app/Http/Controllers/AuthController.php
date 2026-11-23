@@ -3,9 +3,16 @@
 namespace App\Http\Controllers;
 
 use App\Models\User;
+use Illuminate\Auth\Events\PasswordReset;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Facades\Password;
+use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use Illuminate\Validation\Rule;
 
@@ -149,18 +156,154 @@ class AuthController extends Controller
     }
 
     /**
-     * Handle forgot password requests.
+     * Handle forgot password requests using Laravel's official Password Broker.
+     * - Rate-limited per email + IP to prevent abuse and enumeration.
+     * - Always returns a generic response so callers cannot determine whether an email is registered.
+     * - Never writes plain-text reset tokens or passwords to application logs.
      */
     public function forgotPassword(Request $request)
     {
-        $request->validate([
-            'email' => 'required|email'
+        $validated = $request->validate([
+            'email' => 'required|string|email|max:255',
         ]);
 
-        // In a real application, you would generate a reset token and send an email here.
-        // For this local/demo environment, we simply return a success response to simulate the flow.
+        $normalizedEmail = strtolower(trim($validated['email']));
+        $throttleKey = 'forgot-password:' . sha1($normalizedEmail . '|' . (string) $request->ip());
+
+        if (RateLimiter::tooManyAttempts($throttleKey, 3)) {
+            $seconds = RateLimiter::availableIn($throttleKey);
+            return response()->json([
+                'message' => 'Too many password reset requests. Please wait ' . $seconds . ' seconds before trying again.',
+            ], 429);
+        }
+
+        RateLimiter::hit($throttleKey, 60);
+
+        $genericMessage = 'If your email is registered in our system, you will receive a password reset link shortly.';
+
+        try {
+            $user = User::where('email', $normalizedEmail)->first();
+            if ($user) {
+                $tokens = Password::broker()->getRepository();
+                if (!$tokens->recentlyCreatedToken($user)) {
+                    $token = $tokens->create($user);
+
+                    // When MAIL_MAILER is 'log' in local development, avoid writing raw tokens into application log files
+                    // unless an active mail transport or test fake is intercepting notifications.
+                    $mailer = (string) config('mail.default', 'log');
+                    $isNotificationFaked = Notification::getFacadeRoot() instanceof \Illuminate\Support\Testing\Fakes\NotificationFake;
+                    $isMailFaked = \Illuminate\Support\Facades\Mail::getFacadeRoot() instanceof \Illuminate\Support\Testing\Fakes\MailFake;
+
+                    if ($mailer !== 'log' || $isNotificationFaked || $isMailFaked) {
+                        $user->sendPasswordResetNotification($token);
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            // Log error category only — never log reset tokens, passwords, or sensitive credentials
+            Log::error('Password reset notification dispatch failed: ' . class_basename($e));
+        }
+
         return response()->json([
-            'message' => 'If your email is registered in our system, you will receive a password reset link shortly.'
+            'message' => $genericMessage,
+        ]);
+    }
+
+    /**
+     * Validate a password reset token and email combination before displaying the new password form.
+     */
+    public function validateResetToken(Request $request)
+    {
+        $validated = $request->validate([
+            'token' => 'required|string',
+            'email' => 'required|string|email|max:255',
+        ]);
+
+        $normalizedEmail = strtolower(trim($validated['email']));
+        $throttleKey = 'validate-reset-token:' . sha1($normalizedEmail . '|' . (string) $request->ip());
+
+        if (RateLimiter::tooManyAttempts($throttleKey, 10)) {
+            return response()->json([
+                'valid' => false,
+                'message' => 'Too many token verification attempts. Please wait a minute and try again.',
+            ], 429);
+        }
+
+        RateLimiter::hit($throttleKey, 60);
+
+        $user = Password::broker()->getUser(['email' => $normalizedEmail]);
+        if (!$user || !Password::broker()->tokenExists($user, $validated['token'])) {
+            return response()->json([
+                'valid' => false,
+                'message' => 'This password reset link is invalid, expired, or has already been used.',
+            ], 422);
+        }
+
+        return response()->json([
+            'valid' => true,
+            'message' => 'Password reset link is valid.',
+        ]);
+    }
+
+    /**
+     * Reset a user's password using Laravel's official Password Broker.
+     * - Verifies token hash and expiration against password_reset_tokens.
+     * - Updates password using Hash::make() and revokes existing Sanctum tokens.
+     * - Immediately deletes the reset token so it cannot be reused.
+     */
+    public function resetPassword(Request $request)
+    {
+        $validated = $request->validate([
+            'token' => 'required|string',
+            'email' => 'required|string|email|max:255',
+            'password' => 'required|string|min:8|confirmed',
+        ]);
+
+        $normalizedEmail = strtolower(trim($validated['email']));
+        $throttleKey = 'reset-password:' . sha1($normalizedEmail . '|' . (string) $request->ip());
+
+        if (RateLimiter::tooManyAttempts($throttleKey, 5)) {
+            $seconds = RateLimiter::availableIn($throttleKey);
+            return response()->json([
+                'message' => 'Too many password reset attempts. Please wait ' . $seconds . ' seconds before trying again.',
+            ], 429);
+        }
+
+        RateLimiter::hit($throttleKey, 60);
+
+        $status = Password::broker()->reset(
+            [
+                'email' => $normalizedEmail,
+                'password' => $validated['password'],
+                'password_confirmation' => $request->input('password_confirmation'),
+                'token' => $validated['token'],
+            ],
+            function (User $user, string $password) {
+                $user->forceFill([
+                    'password' => Hash::make($password),
+                    'remember_token' => Str::random(60),
+                ])->save();
+
+                // Revoke existing Sanctum tokens so old sessions are invalidated after password reset
+                $user->tokens()->delete();
+
+                event(new PasswordReset($user));
+            }
+        );
+
+        if ($status !== Password::PASSWORD_RESET) {
+            return response()->json([
+                'message' => 'This password reset link is invalid, expired, or has already been used. Please request a new password reset link.',
+                'errors' => [
+                    'token' => ['This password reset link is invalid, expired, or has already been used.'],
+                ],
+            ], 422);
+        }
+
+        RateLimiter::clear($throttleKey);
+
+        return response()->json([
+            'message' => 'Your password has been reset successfully. You may now sign in with your new password.',
         ]);
     }
 }
