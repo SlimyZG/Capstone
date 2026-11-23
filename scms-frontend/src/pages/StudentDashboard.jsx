@@ -8,7 +8,9 @@ import {
   RotateCcw, 
   RefreshCw,
   PlusSquare,
-  ArrowRight
+  ArrowRight,
+  HelpCircle,
+  ListTodo
 } from 'lucide-react';
 import api from '../api';
 import PageHeader from '../components/PageHeader';
@@ -87,6 +89,13 @@ const StudentDashboard = () => {
         <span>{refreshing ? 'Refreshing...' : 'Refresh'}</span>
       </button>
       <Link
+        to="/student/need-help"
+        className="btn-secondary text-xs py-2 px-3.5 border-blue-200 text-[#1e3a8a] hover:bg-blue-50"
+      >
+        <HelpCircle size={14} className="mr-1.5 text-blue-600" />
+        Need Help?
+      </Link>
+      <Link
         to="/student/submit"
         className="btn-primary text-xs py-2 px-3.5"
       >
@@ -105,6 +114,87 @@ const StudentDashboard = () => {
         subtitle="Track your academic inquiries, administrative support tickets, and department resolutions in real time."
         actions={headerActions}
       />
+
+      {/* Three Separate Student Portal Destinations */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6">
+        <Link
+          to="/student/need-help"
+          className="card p-5 hover:border-blue-400 transition-all flex flex-col justify-between gap-3 group"
+        >
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="w-10 h-10 rounded-lg bg-blue-50 text-[#1e3a8a] border border-blue-100 flex items-center justify-center">
+                <HelpCircle size={20} />
+              </div>
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                Digital Student Guide
+              </span>
+            </div>
+            <h2 className="text-base font-bold text-slate-900 group-hover:text-blue-600 transition-colors">
+              UCLM Student Guide
+            </h2>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              Browse simplified university procedures, documentary requirements, and responsible offices from the official UCLM Student Manual.
+            </p>
+          </div>
+          <div className="pt-2 border-t border-slate-100 inline-flex items-center gap-1 text-xs font-bold text-[#1e3a8a]">
+            <span>Open Student Guide</span>
+            <ArrowRight size={13} />
+          </div>
+        </Link>
+
+        <Link
+          to="/student/submit"
+          className="card p-5 hover:border-blue-400 transition-all flex flex-col justify-between gap-3 group"
+        >
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="w-10 h-10 rounded-lg bg-indigo-50 text-indigo-800 border border-indigo-100 flex items-center justify-center">
+                <PlusSquare size={20} />
+              </div>
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                Formal Submission
+              </span>
+            </div>
+            <h2 className="text-base font-bold text-slate-900 group-hover:text-blue-600 transition-colors">
+              Submit Concern
+            </h2>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              Submit a formal academic or non-academic concern directly to your Academic College or Operational Department.
+            </p>
+          </div>
+          <div className="pt-2 border-t border-slate-100 inline-flex items-center gap-1 text-xs font-bold text-[#1e3a8a]">
+            <span>Submit Formal Concern</span>
+            <ArrowRight size={13} />
+          </div>
+        </Link>
+
+        <Link
+          to="/student/concerns"
+          className="card p-5 hover:border-blue-400 transition-all flex flex-col justify-between gap-3 group"
+        >
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="w-10 h-10 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-100 flex items-center justify-center">
+                <ListTodo size={20} />
+              </div>
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                {totalConcerns} Submitted
+              </span>
+            </div>
+            <h2 className="text-base font-bold text-slate-900 group-hover:text-blue-600 transition-colors">
+              My Concerns
+            </h2>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              Track status updates, department replies, and resolution timelines for your formal submitted concerns.
+            </p>
+          </div>
+          <div className="pt-2 border-t border-slate-100 inline-flex items-center gap-1 text-xs font-bold text-[#1e3a8a]">
+            <span>Track My Concerns</span>
+            <ArrowRight size={13} />
+          </div>
+        </Link>
+      </div>
 
       {/* KPI Stat Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">

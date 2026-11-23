@@ -6,6 +6,8 @@ use App\Http\Controllers\ConcernController;
 use App\Http\Controllers\DeanController;
 use App\Http\Controllers\DeptStaffController;
 use App\Http\Controllers\RecurringIncidentController;
+use App\Http\Controllers\SaoSelfServiceController;
+use App\Http\Controllers\StudentSelfServiceController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -70,6 +72,15 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/recurring-incidents/{id}', [RecurringIncidentController::class, 'saoShow']);
         Route::post('/recurring-incidents/{id}/priority-override', [RecurringIncidentController::class, 'saoPriorityOverride']);
         Route::post('/recurring-incidents/{id}/unlink/{concernId}', [RecurringIncidentController::class, 'saoUnlink']);
+
+        // Student Self-Service Assistance Knowledge Base Governance & Analytics (SAO only)
+        Route::get('/self-service/entries', [SaoSelfServiceController::class, 'index']);
+        Route::get('/self-service/entries/{id}', [SaoSelfServiceController::class, 'show'])->whereNumber('id');
+        Route::put('/self-service/entries/{id}', [SaoSelfServiceController::class, 'update'])->whereNumber('id');
+        Route::post('/self-service/entries/{id}/publish', [SaoSelfServiceController::class, 'publish'])->whereNumber('id');
+        Route::post('/self-service/entries/{id}/unpublish', [SaoSelfServiceController::class, 'unpublish'])->whereNumber('id');
+        Route::post('/self-service/entries/{id}/needs-revision', [SaoSelfServiceController::class, 'markNeedsRevision'])->whereNumber('id');
+        Route::get('/self-service/analytics', [SaoSelfServiceController::class, 'analytics']);
     });
 
     // ── Student Routes ─────────────────────────────────────────────────
@@ -82,6 +93,17 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/concerns/{id}/messages', [ConcernController::class, 'sendMessage']);
         Route::post('/concerns/{id}/withdraw', [ConcernController::class, 'withdraw']);
         Route::post('/concerns/{id}/reopen', [ConcernController::class, 'reopen']);
+
+        // Student Self-Service Assistance ("Need Help?" — Separate from formal concern submission)
+        Route::get('/self-service/categories', [StudentSelfServiceController::class, 'categories']);
+        Route::get('/self-service/entries', [StudentSelfServiceController::class, 'entries']);
+        Route::get('/self-service/entries/{idOrCode}', [StudentSelfServiceController::class, 'showEntry']);
+        Route::get('/self-service/tasks', [StudentSelfServiceController::class, 'myTasks']);
+        Route::post('/self-service/tasks', [StudentSelfServiceController::class, 'startTask']);
+        Route::get('/self-service/tasks/{id}', [StudentSelfServiceController::class, 'showTask'])->whereNumber('id');
+        Route::put('/self-service/tasks/{id}', [StudentSelfServiceController::class, 'updateTask'])->whereNumber('id');
+        Route::post('/self-service/tasks/{id}/restart', [StudentSelfServiceController::class, 'restartTaskWithLatestVersion'])->whereNumber('id');
+        Route::post('/self-service/feedback', [StudentSelfServiceController::class, 'submitFeedback']);
     });
 
     // ── Dept Staff Routes ──────────────────────────────────────────────

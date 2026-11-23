@@ -32,6 +32,8 @@ import SaoConcernOversight from './pages/SaoConcernOversight';
 import SaoAssignedConcerns from './pages/SaoAssignedConcerns';
 import SaoConcernDetails from './pages/SaoConcernDetails';
 import RecurringIncidentDetails from './pages/RecurringIncidentDetails';
+import StudentNeedHelp from './pages/StudentNeedHelp';
+import SaoSelfServiceManagement from './pages/SaoSelfServiceManagement';
 
 const HomeRedirect = () => {
   const { user, loading } = useAuth();
@@ -115,6 +117,7 @@ function App() {
             <Route path="/sao/concerns/:id" element={<ProtectedRoute allowedRoles={['sao']}><SaoConcernDetails /></ProtectedRoute>} />
             <Route path="/sao/users" element={<ProtectedRoute allowedRoles={['sao']}><SaoUserManagement /></ProtectedRoute>} />
             <Route path="/sao/oversight" element={<ProtectedRoute allowedRoles={['sao']}><SaoConcernOversight /></ProtectedRoute>} />
+            <Route path="/sao/self-service" element={<ProtectedRoute allowedRoles={['sao']}><SaoSelfServiceManagement /></ProtectedRoute>} />
             <Route path="/sao/recurring-incidents/:id" element={<ProtectedRoute allowedRoles={['sao']}><RecurringIncidentDetails /></ProtectedRoute>} />
             <Route path="/sao/profile" element={<ProtectedRoute allowedRoles={['sao']}><ProfilePage /></ProtectedRoute>} />
           </Route>
@@ -149,6 +152,7 @@ function App() {
           {/* Student Routes (Sidebar Layout) */}
           <Route element={<StudentLayout />}>
             <Route path="/student" element={<ProtectedRoute allowedRoles={['student']}><StudentDashboard /></ProtectedRoute>} />
+            <Route path="/student/need-help" element={<ProtectedRoute allowedRoles={['student']}><StudentNeedHelp /></ProtectedRoute>} />
             <Route path="/student/submit" element={<ProtectedRoute allowedRoles={['student']}><SubmitConcern /></ProtectedRoute>} />
             <Route path="/student/concerns" element={<ProtectedRoute allowedRoles={['student']}><StudentConcernsList /></ProtectedRoute>} />
             <Route path="/student/concerns/:id" element={<ProtectedRoute allowedRoles={['student']}><StudentConcernDetails /></ProtectedRoute>} />
