@@ -15,3 +15,8 @@ Artisan::command('inspire', function () {
 Schedule::command('concerns:process-sla')
     ->cron(config('sla.schedule_cron', '*/15 * * * *'))
     ->withoutOverlapping(30);
+
+// Periodically purge expired rows from password_reset_tokens (default 60-minute expiry).
+Schedule::command('auth:clear-resets')
+    ->everyFifteenMinutes()
+    ->withoutOverlapping();

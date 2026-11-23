@@ -181,18 +181,23 @@ class AuthController extends Controller
 
         $genericMessage = 'If your email is registered in our system, you will receive a password reset link shortly.';
 
+        $user = null;
+        $tokens = null;
+        $tokenCreated = false;
+
         try {
             $user = User::where('email', $normalizedEmail)->first();
             if ($user) {
                 $tokens = Password::broker()->getRepository();
                 if (!$tokens->recentlyCreatedToken($user)) {
                     $token = $tokens->create($user);
+                    $tokenCreated = true;
 
                     // When MAIL_MAILER is 'log' in local development, avoid writing raw tokens into application log files
                     // unless an active mail transport or test fake is intercepting notifications.
                     $mailer = (string) config('mail.default', 'log');
                     $isNotificationFaked = Notification::getFacadeRoot() instanceof \Illuminate\Support\Testing\Fakes\NotificationFake;
-                    $isMailFaked = \Illuminate\Support\Facades\Mail::getFacadeRoot() instanceof \Illuminate\Support\Testing\Fakes\MailFake;
+                    $isMailFaked = Mail::getFacadeRoot() instanceof \Illuminate\Support\Testing\Fakes\MailFake;
 
                     if ($mailer !== 'log' || $isNotificationFaked || $isMailFaked) {
                         $user->sendPasswordResetNotification($token);
@@ -200,8 +205,27 @@ class AuthController extends Controller
                 }
             }
         } catch (\Throwable $e) {
-            // Log error category only — never log reset tokens, passwords, or sensitive credentials
-            Log::error('Password reset notification dispatch failed: ' . class_basename($e));
+            if ($tokenCreated && $user && $tokens) {
+                try {
+                    // Remove the undelivered token so a genuine dispatch failure does not trigger the 60s broker throttle.
+                    $tokens->delete($user);
+                } catch (\Throwable $cleanupException) {
+                    Log::error('Password reset token cleanup failed.', [
+                        'exception' => class_basename($cleanupException),
+                    ]);
+                }
+            }
+
+            // Log non-sensitive transport diagnostics only — never log reset tokens, passwords, email addresses, or SMTP credentials.
+            $mailer = (string) config('mail.default', 'log');
+            Log::error('Password reset notification dispatch failed.', [
+                'exception' => class_basename($e),
+                'code' => (int) $e->getCode(),
+                'mailer' => $mailer,
+                'host' => config("mail.mailers.{$mailer}.host"),
+                'port' => config("mail.mailers.{$mailer}.port"),
+                'scheme' => config("mail.mailers.{$mailer}.scheme"),
+            ]);
         }
 
         return response()->json([

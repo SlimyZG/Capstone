@@ -6,9 +6,11 @@ use App\Models\AcademicUnit;
 use App\Models\ClassList;
 use App\Models\User;
 use App\Notifications\ResetPasswordNotification;
+use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Facades\RateLimiter;
@@ -294,5 +296,233 @@ class AuthAndPasswordResetTest extends TestCase
 
         // Passwords are never returned in API responses
         $this->assertArrayNotHasKey('password', $regRes->json('user'));
+    }
+
+    public function test_failed_email_delivery_preserves_generic_response_avoids_secret_logging_and_allows_safe_retry(): void
+    {
+        RateLimiter::clear('forgot-password:' . sha1($this->student->email . '|127.0.0.1'));
+        RateLimiter::clear('reset-password:' . sha1($this->student->email . '|127.0.0.1'));
+
+        config([
+            'mail.default' => 'smtp',
+            'mail.mailers.smtp.host' => 'smtp.test.invalid',
+            'mail.mailers.smtp.port' => 587,
+            'mail.mailers.smtp.scheme' => 'smtp',
+            'mail.mailers.smtp.username' => 'secret-smtp-user',
+            'mail.mailers.smtp.password' => 'SuperSecretSmtpPass!999',
+        ]);
+
+        Log::spy();
+
+        $channel = new class {
+            public int $attempts = 0;
+            public ?string $failedToken = null;
+            public ?string $deliveredToken = null;
+
+            public function send(object $notifiable, object $notification): void
+            {
+                $this->attempts++;
+                if ($this->attempts === 1) {
+                    $this->failedToken = (string) $notification->token;
+                    throw new \RuntimeException(
+                        "SMTP auth failed for secret-smtp-user / SuperSecretSmtpPass!999 using token {$this->failedToken}",
+                        535
+                    );
+                }
+
+                $this->deliveredToken = (string) $notification->token;
+            }
+        };
+
+        Notification::extend('mail', fn () => $channel);
+        Notification::forgetDrivers();
+
+        $genericMessage = 'If your email is registered in our system, you will receive a password reset link shortly.';
+
+        // 1. First attempt suffers SMTP failure -> generic 200 preserved, undelivered token deleted, no secrets logged
+        $this->postJson('/api/forgot-password', [
+            'email' => $this->student->email,
+        ])
+            ->assertOk()
+            ->assertJsonPath('message', $genericMessage);
+
+        $this->assertSame(1, $channel->attempts);
+        $this->assertNotEmpty($channel->failedToken);
+        $this->assertDatabaseMissing('password_reset_tokens', [
+            'email' => $this->student->email,
+        ]);
+
+        $failedToken = $channel->failedToken;
+        $studentEmail = $this->student->email;
+
+        Log::shouldHaveReceived('error')
+            ->once()
+            ->withArgs(function (string $message, array $context = []) use ($failedToken, $studentEmail) {
+                $serialized = (string) json_encode($context);
+
+                $this->assertSame('Password reset notification dispatch failed.', $message);
+                $this->assertSame('RuntimeException', $context['exception'] ?? null);
+                $this->assertSame(535, $context['code'] ?? null);
+                $this->assertSame('smtp', $context['mailer'] ?? null);
+                $this->assertSame('smtp.test.invalid', $context['host'] ?? null);
+                $this->assertSame(587, $context['port'] ?? null);
+                $this->assertSame('smtp', $context['scheme'] ?? null);
+                $this->assertStringNotContainsString('SuperSecretSmtpPass!999', $serialized);
+                $this->assertStringNotContainsString('secret-smtp-user', $serialized);
+                $this->assertStringNotContainsString((string) $failedToken, $serialized);
+                $this->assertStringNotContainsString($studentEmail, $serialized);
+
+                return true;
+            });
+
+        // 2. Immediate retry succeeds without hitting the 60s broker recentlyCreatedToken throttle
+        $this->postJson('/api/forgot-password', [
+            'email' => $this->student->email,
+        ])
+            ->assertOk()
+            ->assertJsonPath('message', $genericMessage);
+
+        $this->assertSame(2, $channel->attempts);
+        $this->assertNotEmpty($channel->deliveredToken);
+        $this->assertNotSame($channel->failedToken, $channel->deliveredToken);
+
+        $tokenRow = DB::table('password_reset_tokens')
+            ->where('email', $this->student->email)
+            ->first();
+
+        $this->assertNotNull($tokenRow);
+        $this->assertTrue(Hash::check($channel->deliveredToken, $tokenRow->token));
+
+        // 3. The freshly delivered token validates and completes password reset cleanly
+        $this->postJson('/api/reset-password/validate', [
+            'token' => $channel->deliveredToken,
+            'email' => $this->student->email,
+        ])
+            ->assertOk()
+            ->assertJsonPath('valid', true);
+
+        $this->postJson('/api/reset-password', [
+            'token' => $channel->deliveredToken,
+            'email' => $this->student->email,
+            'password' => 'RecoveredPass789!',
+            'password_confirmation' => 'RecoveredPass789!',
+        ])->assertOk();
+
+        $this->assertTrue(Hash::check('RecoveredPass789!', $this->student->fresh()->password));
+    }
+
+    public function test_repeated_failed_email_deliveries_still_enforce_rate_limiting(): void
+    {
+        RateLimiter::clear('forgot-password:' . sha1($this->student->email . '|127.0.0.1'));
+
+        config([
+            'mail.default' => 'smtp',
+            'mail.mailers.smtp.host' => 'smtp.test.invalid',
+            'mail.mailers.smtp.port' => 587,
+            'mail.mailers.smtp.scheme' => 'smtp',
+        ]);
+
+        Log::spy();
+
+        $failingChannel = new class {
+            public int $attempts = 0;
+
+            public function send(object $notifiable, object $notification): void
+            {
+                $this->attempts++;
+                throw new \RuntimeException('SMTP unreachable', 500);
+            }
+        };
+
+        Notification::extend('mail', fn () => $failingChannel);
+        Notification::forgetDrivers();
+
+        for ($i = 0; $i < 3; $i++) {
+            $this->postJson('/api/forgot-password', [
+                'email' => $this->student->email,
+            ])->assertOk();
+
+            $this->assertDatabaseMissing('password_reset_tokens', [
+                'email' => $this->student->email,
+            ]);
+        }
+
+        $this->assertSame(3, $failingChannel->attempts);
+
+        // 4th rapid request is still rate-limited even though delivery kept failing
+        $this->postJson('/api/forgot-password', [
+            'email' => $this->student->email,
+        ])->assertStatus(429);
+    }
+
+    public function test_password_recovery_endpoints_succeed_even_with_stale_bearer_token(): void
+    {
+        Notification::fake();
+        RateLimiter::clear('forgot-password:' . sha1($this->student->email . '|127.0.0.1'));
+        RateLimiter::clear('validate-reset-token:' . sha1($this->student->email . '|127.0.0.1'));
+        RateLimiter::clear('reset-password:' . sha1($this->student->email . '|127.0.0.1'));
+
+        $staleToken = $this->student->createToken('stale-browser-session')->plainTextToken;
+        $this->student->tokens()->delete();
+
+        $headers = ['Authorization' => 'Bearer ' . $staleToken];
+
+        $this->postJson('/api/forgot-password', [
+            'email' => $this->student->email,
+        ], $headers)->assertOk();
+
+        // Replace with a known token for explicit validation and reset verification
+        $rawToken = Password::broker()->createToken($this->student);
+
+        $this->postJson('/api/reset-password/validate', [
+            'token' => $rawToken,
+            'email' => $this->student->email,
+        ], $headers)
+            ->assertOk()
+            ->assertJsonPath('valid', true);
+
+        $this->postJson('/api/reset-password', [
+            'token' => $rawToken,
+            'email' => $this->student->email,
+            'password' => 'ResetWithStaleHeader123!',
+            'password_confirmation' => 'ResetWithStaleHeader123!',
+        ], $headers)->assertOk();
+
+        $this->assertTrue(Hash::check('ResetWithStaleHeader123!', $this->student->fresh()->password));
+    }
+
+    public function test_auth_clear_resets_is_scheduled_and_prunes_only_expired_tokens(): void
+    {
+        $events = collect(app(Schedule::class)->events());
+        $hasClearResets = $events->contains(
+            fn ($event) => str_contains((string) $event->command, 'auth:clear-resets')
+        );
+
+        $this->assertTrue($hasClearResets, 'Expected auth:clear-resets to be registered in the Laravel scheduler.');
+
+        $otherStudent = User::create([
+            'name' => 'Second CCS Student',
+            'email' => 'second.student@uclm.edu.ph',
+            'student_id_number' => '20240002',
+            'password' => Hash::make('OldPassword123!'),
+            'role' => 'student',
+            'academic_unit_id' => $this->ccsUnit->id,
+        ]);
+
+        Password::broker()->createToken($this->student);
+        Password::broker()->createToken($otherStudent);
+
+        DB::table('password_reset_tokens')
+            ->where('email', $this->student->email)
+            ->update(['created_at' => now()->subMinutes(65)]);
+
+        $this->artisan('auth:clear-resets')->assertSuccessful();
+
+        $this->assertDatabaseMissing('password_reset_tokens', [
+            'email' => $this->student->email,
+        ]);
+        $this->assertDatabaseHas('password_reset_tokens', [
+            'email' => $otherStudent->email,
+        ]);
     }
 }
