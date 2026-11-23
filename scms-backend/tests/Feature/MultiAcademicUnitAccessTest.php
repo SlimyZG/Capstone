@@ -439,11 +439,17 @@ class MultiAcademicUnitAccessTest extends TestCase
         $this->assertEquals($this->marineUnit->id, $concern->academic_unit_id);
         $this->assertNotEquals(1, $concern->academic_unit_id);
 
-        // Marine staff transfers the concern to Cashier
-        $response = $this->actingAs($this->marineStaff)->postJson("/api/dept-staff/concerns/{$concern->concern_id}/transfer", [
-            'target_category' => 'operational_departments',
-            'target_id' => $this->cashierDept->id,
-            'notes' => 'Please redirect to Cashier for fee verification.',
+        // Marine staff initiates handshake transfer to Cashier and Cashier accepts
+        $initRes = $this->actingAs($this->marineStaff)->postJson("/api/dept-staff/concerns/{$concern->concern_id}/transfers", [
+            'to_dept_id' => $this->cashierDept->id,
+            'transfer_reason' => 'Please redirect to Cashier for fee verification.',
+            'handoff_summary' => 'Tuition billing inquiry mistakenly submitted to Marine staff.',
+        ]);
+        $initRes->assertCreated();
+
+        $transferId = $initRes->json('transfer_request.id');
+        $response = $this->actingAs($this->cashierStaff)->postJson("/api/dept-staff/concerns/{$concern->concern_id}/transfers/{$transferId}/accept", [
+            'decision_notes' => 'Accepted by Cashier.',
         ]);
 
         $response->assertStatus(200);

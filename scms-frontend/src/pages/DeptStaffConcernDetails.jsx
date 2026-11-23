@@ -13,6 +13,11 @@ import SlaTrackingCard from '../components/SlaTrackingCard';
 import CadApprovalDocumentModal from '../components/CadApprovalDocumentModal';
 import CadDecisionUploadModal from '../components/CadDecisionUploadModal';
 import ConcernAttachments from '../components/ConcernAttachments';
+import {
+  CoordinationActionBanners,
+  InternalDepartmentChannelCard,
+  CoordinationOwnershipSidebarCard,
+} from '../components/InterdepartmentalCoordinationPanel';
 
 const DeptStaffConcernDetails = () => {
   const { id } = useParams();
@@ -163,9 +168,11 @@ const DeptStaffConcernDetails = () => {
   const studentId = concern.student?.student_id_number || '—';
   const departmentName = concern.department?.name || concern.academic_unit?.name || '—';
   const isAcademic = concern.workflow_type === 'academic' || concern.category === 'academic_units';
-  const canResolve = ['pending', 'in_progress', 'approved', 'returned'].includes(concern.status);
-  const canMarkInProgress = ['pending', 'returned'].includes(concern.status);
-  const canEscalate = ['pending', 'in_progress', 'returned'].includes(concern.status);
+  const isPrimaryOwner = concern.coordination ? concern.coordination.is_primary_owner : true;
+  const hasBlockingPcoApproval = Boolean(concern.coordination?.has_blocking_pco_approval);
+  const canResolve = isPrimaryOwner && ['pending', 'in_progress', 'approved', 'returned'].includes(concern.status);
+  const canMarkInProgress = isPrimaryOwner && ['pending', 'returned'].includes(concern.status);
+  const canEscalate = isPrimaryOwner && ['pending', 'in_progress', 'returned'].includes(concern.status);
 
   return (
     <div className="pb-12 space-y-6">
@@ -177,6 +184,13 @@ const DeptStaffConcernDetails = () => {
         <span className="mx-2">›</span>
         <span className="font-semibold text-slate-700">#REQ-{concern.concern_id.toString().padStart(4, '0')}</span>
       </div>
+
+      {/* Interdepartmental Action Banners (Transfer Decisions, Collaborations, PCO Work Authorization) */}
+      <CoordinationActionBanners
+        concern={concern}
+        routePrefix="/dept-staff"
+        onRefresh={fetchData}
+      />
 
       {/* Header */}
       <div className="card p-6 bg-white">
@@ -264,15 +278,33 @@ const DeptStaffConcernDetails = () => {
             </div>
           )}
 
-          {/* Communication Thread */}
+          {/* Dedicated Internal Department Communication Channel (Physically Separated from Student Thread) */}
+          <InternalDepartmentChannelCard
+            concern={concern}
+            routePrefix="/dept-staff"
+            onRefresh={fetchData}
+          />
+
+          {/* Student-Facing Communication Thread */}
           <div id="messages" className="card flex flex-col h-[520px]">
             <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
-              <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wider">Communication Activity</h2>
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wider">Student Communication Activity</h2>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                  Student-Visible
+                </span>
+              </div>
               <span className="text-xs text-slate-500 font-medium">{messages.length} messages</span>
             </div>
 
             <div className="flex-1 overflow-y-auto p-5 space-y-4 bg-slate-50/30">
-              {messages.length === 0 ? (
+              {concern.coordination?.access_mode === 'pending_transfer_target' ? (
+                <EmptyState
+                  title="Student thread hidden during transfer preview"
+                  description="Full student communication history is unlocked once your department accepts primary ownership of this concern."
+                  className="border-0 shadow-none py-12"
+                />
+              ) : messages.length === 0 ? (
                 <EmptyState
                   title="No messages yet"
                   description="Use the input below to reply to the student or provide instructional guidance."
@@ -305,23 +337,29 @@ const DeptStaffConcernDetails = () => {
             </div>
 
             <div className="p-4 bg-white border-t border-slate-200">
-              <form onSubmit={handleSendMessage} className="flex gap-2">
-                <input
-                  type="text"
-                  placeholder="Type an official response or request more details..."
-                  className="input-field"
-                  value={newMessage}
-                  onChange={(e) => setNewMessage(e.target.value)}
-                />
-                <button
-                  type="submit"
-                  disabled={!newMessage.trim()}
-                  className="btn-dark px-4 shrink-0"
-                >
-                  <Send size={15} className="mr-1.5" />
-                  <span>Send</span>
-                </button>
-              </form>
+              {isPrimaryOwner ? (
+                <form onSubmit={handleSendMessage} className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Type an official response to the student..."
+                    className="input-field"
+                    value={newMessage}
+                    onChange={(e) => setNewMessage(e.target.value)}
+                  />
+                  <button
+                    type="submit"
+                    disabled={!newMessage.trim()}
+                    className="btn-dark px-4 shrink-0"
+                  >
+                    <Send size={15} className="mr-1.5" />
+                    <span>Send</span>
+                  </button>
+                </form>
+              ) : (
+                <div className="text-xs text-slate-500 bg-slate-50 px-3.5 py-2.5 rounded-xl border border-slate-200">
+                  Only the primary responsible department (<span className="font-bold text-slate-700">{departmentName}</span>) may send student-facing replies. Use the <span className="font-bold text-indigo-800">Internal Department Channel</span> above to coordinate with staff.
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -331,15 +369,36 @@ const DeptStaffConcernDetails = () => {
           {/* Resolution Timeframe & Automatic Follow-up Card */}
           <SlaTrackingCard concern={concern} />
 
+          {/* Interdepartmental Ownership, Transfer & Collaboration Sidebar Card */}
+          <CoordinationOwnershipSidebarCard
+            concern={concern}
+            routePrefix="/dept-staff"
+            onRefresh={fetchData}
+          />
+
           {/* Resolution Actions */}
           <div className="card p-6">
             <h2 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-4">Workflow Actions</h2>
             <div className="space-y-2.5">
+              {!isPrimaryOwner && concern.status !== 'resolved' && (
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-600 text-xs leading-relaxed">
+                  Primary workflow status and resolution controls are reserved for the primary responsible department (<span className="font-bold text-slate-800">{departmentName}</span>).
+                </div>
+              )}
+
+              {isPrimaryOwner && hasBlockingPcoApproval && concern.status !== 'resolved' && (
+                <div className="p-3 bg-amber-50 border border-amber-300 rounded-xl text-amber-900 text-xs leading-relaxed">
+                  <span className="font-bold block mb-0.5">PCO Work Authorization Required</span>
+                  Formal departmental approval must be granted before PCO can perform work requiring authorization and resolve this concern.
+                </div>
+              )}
+
               {canResolve && (
                 <button
                   onClick={() => handleAction('resolve')}
-                  disabled={!!actionLoading}
-                  className="w-full btn-success py-2.5 text-xs flex items-center justify-center gap-1.5"
+                  disabled={!!actionLoading || hasBlockingPcoApproval}
+                  className="w-full btn-success py-2.5 text-xs flex items-center justify-center gap-1.5 disabled:opacity-50"
+                  title={hasBlockingPcoApproval ? 'Blocked until PCO Department Approval is granted' : 'Resolve Concern'}
                 >
                   <CheckCircle2 size={16} />
                   <span>{actionLoading === 'resolve' ? 'Resolving...' : 'Resolve Concern'}</span>
@@ -382,8 +441,8 @@ const DeptStaffConcernDetails = () => {
                 </div>
               )}
 
-              {/* Conditional CAD Approval and Physical Tracking (Non-Academic Only) */}
-              {!isAcademic && (
+              {/* Conditional CAD Approval and Physical Tracking (Non-Academic Primary Owner Only) */}
+              {!isAcademic && isPrimaryOwner && (
                 <div className="mt-4 pt-4 border-t border-slate-200">
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-1.5">

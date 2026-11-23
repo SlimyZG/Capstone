@@ -25,6 +25,10 @@ import AiSummaryCard from '../components/AiSummaryCard';
 import SlaStatusBadge from '../components/SlaStatusBadge';
 import SlaTrackingCard from '../components/SlaTrackingCard';
 import ConcernAttachments from '../components/ConcernAttachments';
+import {
+  CoordinationActionBanners,
+  InternalDepartmentChannelCard,
+} from '../components/InterdepartmentalCoordinationPanel';
 
 const DeanConcernDetails = () => {
   const { id } = useParams();
@@ -192,8 +196,9 @@ const DeanConcernDetails = () => {
   const studentName = concern.student?.name || (concern.is_anonymous ? 'Anonymous' : 'Student');
   const studentId = concern.student?.student_id_number || (concern.is_anonymous ? '********' : '—');
   const departmentName = concern.department?.name || concern.academic_unit?.name || 'Academic Unit';
-  const isEscalated = concern.status === 'escalated';
-  const canResolve = ['pending', 'in_progress', 'approved', 'escalated'].includes(concern.status);
+  const isPcoApproverView = ['pco_approver', 'pco_approver_readonly'].includes(concern.coordination?.access_mode);
+  const isEscalated = !isPcoApproverView && concern.status === 'escalated';
+  const canResolve = !isPcoApproverView && ['pending', 'in_progress', 'approved', 'escalated'].includes(concern.status);
 
   return (
     <div className="pb-12 max-w-6xl mx-auto">
@@ -204,6 +209,15 @@ const DeanConcernDetails = () => {
         </Link>
         <span className="mx-2">›</span>
         <span className="font-medium text-slate-700">Case #ESC-{concern.concern_id.toString().padStart(4, '0')}</span>
+      </div>
+
+      {/* PCO Department Approval Review & Coordination Banner (when applicable) */}
+      <div className="mb-6">
+        <CoordinationActionBanners
+          concern={concern}
+          routePrefix="/dean"
+          onRefresh={fetchData}
+        />
       </div>
 
       {/* Header */}
@@ -291,6 +305,16 @@ const DeanConcernDetails = () => {
             )}
           </div>
 
+          {/* Internal Department Channel (Shown when coordination / PCO approval is active) */}
+          {(concern.coordination?.pco_approval_requests?.length > 0 ||
+            concern.coordination?.internal_messages?.length > 0) && (
+            <InternalDepartmentChannelCard
+              concern={concern}
+              routePrefix="/dean"
+              onRefresh={fetchData}
+            />
+          )}
+
           {/* Communication Thread */}
           <div id="messages" className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col h-[450px]">
             <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
@@ -326,22 +350,28 @@ const DeanConcernDetails = () => {
             </div>
 
             <div className="p-4 bg-white border-t border-slate-200">
-              <form onSubmit={handleSendMessage} className="flex items-center gap-2">
-                <input
-                  type="text"
-                  className="flex-1 px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                  placeholder="Type an official Dean response or remark..."
-                  value={newMessage}
-                  onChange={(e) => setNewMessage(e.target.value)}
-                />
-                <button
-                  type="submit"
-                  disabled={!newMessage.trim()}
-                  className="px-4 py-2.5 bg-[#1e3a8a] hover:bg-blue-900 text-white rounded-xl text-xs sm:text-sm font-semibold transition-colors disabled:opacity-50"
-                >
-                  Send
-                </button>
-              </form>
+              {!isPcoApproverView ? (
+                <form onSubmit={handleSendMessage} className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    className="flex-1 px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                    placeholder="Type an official Dean response or remark..."
+                    value={newMessage}
+                    onChange={(e) => setNewMessage(e.target.value)}
+                  />
+                  <button
+                    type="submit"
+                    disabled={!newMessage.trim()}
+                    className="px-4 py-2.5 bg-[#1e3a8a] hover:bg-blue-900 text-white rounded-xl text-xs sm:text-sm font-semibold transition-colors disabled:opacity-50"
+                  >
+                    Send
+                  </button>
+                </form>
+              ) : (
+                <div className="text-xs text-slate-500 bg-slate-50 px-3.5 py-2.5 rounded-xl border border-slate-200">
+                  As a designated PCO approving authority, student-facing replies remain with the primary responsible department (<span className="font-bold text-slate-700">{departmentName}</span>). Use the <span className="font-bold text-indigo-800">Internal Department Channel</span> above to coordinate with PCO.
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -434,13 +464,15 @@ const DeanConcernDetails = () => {
               <div className="pt-3 border-t border-slate-100">
                 <div className="flex items-center justify-between mb-1.5">
                   <p className="text-slate-400 font-semibold uppercase tracking-wider text-[10px]">Priority Level</p>
-                  <button
-                    type="button"
-                    onClick={openOverrideModal}
-                    className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
-                  >
-                    <Sliders size={12} /> Override Priority
-                  </button>
+                  {!isPcoApproverView && (
+                    <button
+                      type="button"
+                      onClick={openOverrideModal}
+                      className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
+                    >
+                      <Sliders size={12} /> Override Priority
+                    </button>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-2">

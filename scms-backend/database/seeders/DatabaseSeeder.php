@@ -58,10 +58,11 @@ class DatabaseSeeder extends Seeder
             'Scholarship',
             'STO',
             "Student's Accounting",
+            'PCO',
         ];
 
         foreach ($departments as $deptName) {
-            Department::create(['name' => $deptName]);
+            Department::firstOrCreate(['name' => $deptName]);
         }
 
         // 4. Seed Student Self-Service Assistance Knowledge Base (Pending UCLM Validation / Unpublished by default)

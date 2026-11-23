@@ -100,6 +100,74 @@ class DeanController extends Controller
     }
 
     /**
+     * Check whether the concern belongs to the Dean's own academic workflow
+     * (as opposed to a PCO-owned operational concern where the Dean's academic unit is only a designated PCO approver).
+     */
+    private function isAcademicDeanWorkflowConcern($user, Concern $concern): bool
+    {
+        if (!$user->academic_unit_id || (int) $concern->academic_unit_id !== (int) $user->academic_unit_id) {
+            return false;
+        }
+
+        $isAcademic = $concern->workflow_type === 'academic'
+            || ($concern->category === 'academic_units' && is_null($concern->dept_id));
+
+        if (!$isAcademic) {
+            return false;
+        }
+
+        return $concern->target_type === 'dean'
+            || in_array($concern->status, ['escalated', 'approved', 'returned', 'rejected', 'resolved'], true);
+    }
+
+    /**
+     * Return 403 if the Dean is attempting a primary/Dean workflow action on a concern where they only hold PCO approver access.
+     */
+    private function rejectIfOnlyPcoApprover($user, int $id)
+    {
+        $concern = Concern::find($id);
+        if (!$concern) {
+            return null;
+        }
+
+        if (!$this->isAcademicDeanWorkflowConcern($user, $concern)) {
+            $mode = InterdepartmentalCoordinationController::resolveAccessMode($user, $concern);
+            if (in_array($mode, ['pco_approver', 'pco_approver_readonly'], true)) {
+                return response()->json([
+                    'message' => 'Unauthorized. As a designated PCO approving authority, you may only review and decide the PCO Department Approval Request or post in the Internal Department Channel. Primary concern status, student replies, priority overrides, and resolution remain with PCO.',
+                ], 403);
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Scope query strictly to the Dean's academic workflow (excluding PCO-only approver records).
+     */
+    private function scopeForAcademicDeanOnly($query, $user)
+    {
+        if ($user->academic_unit_id) {
+            $unitId = (int) $user->academic_unit_id;
+            $query->where('academic_unit_id', $unitId)
+                ->where(function ($q) {
+                    $q->where('workflow_type', 'academic')
+                      ->orWhere(function ($q2) {
+                          $q2->where('category', 'academic_units')->whereNull('dept_id');
+                      });
+                })
+                ->where(function ($inner) {
+                    $inner->where('status', 'escalated')
+                          ->orWhere('target_type', 'dean')
+                          ->orWhereIn('status', ['approved', 'returned', 'rejected', 'resolved']);
+                });
+        } else {
+            $query->whereRaw('1 = 0');
+        }
+        return $query;
+    }
+
+    /**
      * Approve an escalated concern — routes it back to department staff,
      * or for Academic/CAD marks as approved by Dean/CAD.
      */
@@ -107,8 +175,12 @@ class DeanController extends Controller
     {
         $user = $request->user();
 
+        if ($denied = $this->rejectIfOnlyPcoApprover($user, $id)) {
+            return $denied;
+        }
+
         $query = Concern::where('concern_id', $id)->where('status', 'escalated');
-        $this->scopeForDean($query, $user);
+        $this->scopeForAcademicDeanOnly($query, $user);
         $concern = $query->firstOrFail();
 
         $validated = $request->validate([
@@ -177,8 +249,12 @@ class DeanController extends Controller
     {
         $user = $request->user();
 
+        if ($denied = $this->rejectIfOnlyPcoApprover($user, $id)) {
+            return $denied;
+        }
+
         $query = Concern::where('concern_id', $id)->where('status', 'escalated');
-        $this->scopeForDean($query, $user);
+        $this->scopeForAcademicDeanOnly($query, $user);
         $concern = $query->firstOrFail();
 
         $validated = $request->validate([
@@ -247,8 +323,12 @@ class DeanController extends Controller
     {
         $user = $request->user();
 
+        if ($denied = $this->rejectIfOnlyPcoApprover($user, $id)) {
+            return $denied;
+        }
+
         $query = Concern::where('concern_id', $id)->where('status', 'escalated');
-        $this->scopeForDean($query, $user);
+        $this->scopeForAcademicDeanOnly($query, $user);
         $concern = $query->firstOrFail();
 
         $validated = $request->validate([
@@ -280,9 +360,20 @@ class DeanController extends Controller
     {
         $user = $request->user();
 
+        if ($denied = $this->rejectIfOnlyPcoApprover($user, $id)) {
+            return $denied;
+        }
+
         $query = Concern::where('concern_id', $id);
-        $this->scopeForDean($query, $user);
+        $this->scopeForAcademicDeanOnly($query, $user);
         $concern = $query->whereIn('status', ['pending', 'in_progress', 'approved', 'escalated'])->firstOrFail();
+
+        if ($blockingPco = InterdepartmentalCoordinationController::hasBlockingPcoApproval($concern)) {
+            return response()->json([
+                'message' => "Cannot resolve concern while PCO Department Approval from {$blockingPco->approving_office_name} is '{$blockingPco->status}'. Formal departmental approval must be granted first.",
+                'pco_approval_status' => $blockingPco->status,
+            ], 422);
+        }
 
         $validated = $request->validate([
             'notes' => 'nullable|string',
@@ -341,16 +432,25 @@ class DeanController extends Controller
     private function scopeForDean($query, $user)
     {
         if ($user->academic_unit_id) {
-            $query->where('academic_unit_id', $user->academic_unit_id)
-                  ->where(function ($q) {
-                      $q->where('workflow_type', 'academic')
-                        ->orWhere('category', 'academic_units');
-                  })
-                  ->where(function ($inner) {
-                      $inner->where('status', 'escalated')
-                            ->orWhere('target_type', 'dean')
-                            ->orWhereIn('status', ['approved', 'returned', 'rejected', 'resolved']);
-                  });
+            $unitId = (int) $user->academic_unit_id;
+            $query->where(function ($outer) use ($unitId) {
+                $outer->where(function ($acad) use ($unitId) {
+                    $acad->where('academic_unit_id', $unitId)
+                        ->where(function ($q) {
+                            $q->where('workflow_type', 'academic')
+                              ->orWhere('category', 'academic_units');
+                        })
+                        ->where(function ($inner) {
+                            $inner->where('status', 'escalated')
+                                  ->orWhere('target_type', 'dean')
+                                  ->orWhereIn('status', ['approved', 'returned', 'rejected', 'resolved']);
+                        });
+                })
+                ->orWhereHas('pcoApprovalRequests', function ($pco) use ($unitId) {
+                    $pco->where('approving_academic_unit_id', $unitId)
+                        ->whereIn('status', ['pending', 'clarification_requested', 'approved', 'rejected', 'superseded']);
+                });
+            });
         } else {
             // Dean with no unit assignment: fail-closed to prevent unauthorized access
             $query->whereRaw('1 = 0');
@@ -389,6 +489,7 @@ class DeanController extends Controller
 
         $concern->sla = app(\App\Services\ConcernSlaService::class)->describe($concern);
         $concern->prediction = app(\App\Services\ResolutionPredictionService::class)->predict($concern);
+        $concern->coordination = InterdepartmentalCoordinationController::buildCoordinationPayload($user, $concern);
 
         return response()->json([
             'concern' => $concern,
@@ -402,8 +503,12 @@ class DeanController extends Controller
     {
         $user = $request->user();
 
+        if ($denied = $this->rejectIfOnlyPcoApprover($user, $id)) {
+            return $denied;
+        }
+
         $query = Concern::where('concern_id', $id);
-        $this->scopeForDean($query, $user);
+        $this->scopeForAcademicDeanOnly($query, $user);
         $concern = $query->firstOrFail();
 
         $validated = $request->validate([
@@ -475,8 +580,12 @@ class DeanController extends Controller
             return response()->json(['message' => 'Concern not found.'], 404);
         }
 
-        // Verify that this concern is within the authorized Dean workflow scope
-        $authorizedConcern = $this->scopeForDean(Concern::where('concern_id', $id), $user)->first();
+        if ($denied = $this->rejectIfOnlyPcoApprover($user, $id)) {
+            return $denied;
+        }
+
+        // Verify that this concern is within the authorized Academic Dean workflow scope
+        $authorizedConcern = $this->scopeForAcademicDeanOnly(Concern::where('concern_id', $id), $user)->first();
         if (!$authorizedConcern) {
             return response()->json([
                 'message' => 'Unauthorized action for this concern.',

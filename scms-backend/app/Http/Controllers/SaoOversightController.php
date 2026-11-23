@@ -412,35 +412,60 @@ class SaoOversightController extends Controller
     }
 
     /**
-     * Check if a concern is assigned to or involves the Student Affairs Office (SAO).
+     * Check if a concern is currently accessible to the Student Affairs Office (SAO) under Option A.
+     * Uses structured, current relationship records (never historical free-text routing notes):
+     * - SAO is the current primary assigned department ('primary'), OR
+     * - SAO is a pending transfer target ('pending_transfer_target' — limited preview only), OR
+     * - SAO is an invited/accepted/completed collaborator ('pending_collaborator', 'active_collaborator', 'completed_collaborator'), OR
+     * - SAO is a designated PCO approving department on a non-cancelled PCO approval request ('pco_approver', 'pco_approver_readonly').
      */
     private function isAssignedToSao(Concern $concern): bool
     {
+        $saoUser = auth('sanctum')->user() ?? auth()->user() ?? request()?->user();
+        if ($saoUser instanceof \App\Models\User && $saoUser->role === 'sao') {
+            return InterdepartmentalCoordinationController::resolveAccessMode($saoUser, $concern) !== null;
+        }
+
         $saoDept = Department::where('name', 'like', '%SAO%')
             ->orWhere('name', 'like', '%Student Affairs%')
             ->first();
 
-        $saoDeptId = $saoDept ? $saoDept->id : null;
+        $saoDeptId = $saoDept ? (int) $saoDept->id : null;
+        if (!$saoDeptId) {
+            return false;
+        }
 
-        if ($saoDeptId && (int) $concern->dept_id === (int) $saoDeptId) {
+        if ((int) $concern->dept_id === $saoDeptId) {
             return true;
         }
 
-        if ($saoDept) {
-            return ConcernRouting::where('concern_id', $concern->concern_id)
-                ->where(function ($q) use ($saoDept) {
-                    $q->where('notes', 'like', '%SAO%')
-                      ->orWhere('notes', 'like', '%Student Affairs%');
-                })
-                ->exists();
+        $inPendingTransfer = \App\Models\ConcernTransferRequest::where('concern_id', $concern->concern_id)
+            ->where('to_dept_id', $saoDeptId)
+            ->where('status', 'pending')
+            ->exists();
+        if ($inPendingTransfer) {
+            return true;
         }
 
-        return false;
+        $inCollab = \App\Models\ConcernCollaboration::where('concern_id', $concern->concern_id)
+            ->where('collaborator_dept_id', $saoDeptId)
+            ->whereIn('status', ['pending', 'accepted', 'completed'])
+            ->exists();
+        if ($inCollab) {
+            return true;
+        }
+
+        $inPco = \App\Models\PcoApprovalRequest::where('concern_id', $concern->concern_id)
+            ->where('approving_dept_id', $saoDeptId)
+            ->whereIn('status', ['pending', 'clarification_requested', 'approved', 'rejected', 'superseded'])
+            ->exists();
+
+        return $inPco;
     }
 
     /**
-     * Get list of concerns explicitly assigned to the Student Affairs Office (SAO).
-     * Strictly restricted to concerns assigned to SAO or routed to SAO in workflow.
+     * Get list of concerns explicitly assigned to or involving the Student Affairs Office (SAO).
+     * Strictly uses structured relationship records under Option A.
      */
     public function assignedConcerns(Request $request)
     {
@@ -453,11 +478,16 @@ class SaoOversightController extends Controller
         $query = Concern::query();
 
         if ($saoDeptId) {
-            $query->where(function ($q) use ($saoDeptId, $saoDept) {
+            $query->where(function ($q) use ($saoDeptId) {
                 $q->where('dept_id', $saoDeptId)
-                  ->orWhereHas('routingHistory', function ($rh) use ($saoDept) {
-                      $rh->where('notes', 'like', '%SAO%')
-                         ->orWhere('notes', 'like', '%Student Affairs%');
+                  ->orWhereHas('transferRequests', function ($tr) use ($saoDeptId) {
+                      $tr->where('to_dept_id', $saoDeptId)->where('status', 'pending');
+                  })
+                  ->orWhereHas('collaborations', function ($col) use ($saoDeptId) {
+                      $col->where('collaborator_dept_id', $saoDeptId)->whereIn('status', ['pending', 'accepted', 'completed']);
+                  })
+                  ->orWhereHas('pcoApprovalRequests', function ($pco) use ($saoDeptId) {
+                      $pco->where('approving_dept_id', $saoDeptId)->whereIn('status', ['pending', 'clarification_requested', 'approved', 'rejected', 'superseded']);
                   });
             });
         } else {
@@ -548,9 +578,14 @@ class SaoOversightController extends Controller
             $concern->student->email = 'anonymous@scms.local';
         }
 
-        // Resolution-target status and historical prediction (only reached for SAO-assigned concerns)
+        // Resolution-target status and historical prediction (only reached for SAO-authorized concerns)
         $concern->sla = app(\App\Services\ConcernSlaService::class)->describe($concern);
         $concern->prediction = app(\App\Services\ResolutionPredictionService::class)->predict($concern);
+        $concern->coordination = InterdepartmentalCoordinationController::buildCoordinationPayload($request->user(), $concern);
+        if (in_array($concern->coordination['access_mode'] ?? null, ['pending_transfer_target', 'pending_collaborator'], true)) {
+            $concern->setRelation('messages', collect());
+            $concern->attachments = [];
+        }
 
         return response()->json([
             'concern' => $concern,
@@ -570,6 +605,12 @@ class SaoOversightController extends Controller
         if (!$this->isAssignedToSao($concern)) {
             return response()->json([
                 'message' => 'Unauthorized action for this concern.',
+            ], 403);
+        }
+
+        if (!InterdepartmentalCoordinationController::isPrimaryOwner($request->user(), $concern)) {
+            return response()->json([
+                'message' => 'Unauthorized. Only the primary responsible department may send student-facing replies. Collaborating or approving departments must use the Internal Department Channel.',
             ], 403);
         }
 
@@ -594,7 +635,10 @@ class SaoOversightController extends Controller
     }
 
     /**
-     * Override priority for a concern assigned to SAO.
+     * Override priority for a concern where SAO holds active Option A authorization.
+     * Allowed when SAO is the primary owner ('primary'), an active accepted collaborator ('active_collaborator'),
+     * or an active designated PCO approver ('pco_approver').
+     * Pending transfer previews, pending collaboration invitations, and completed/stale relationships cannot mutate priority.
      */
     public function priorityOverride(Request $request, int $id)
     {
@@ -603,9 +647,10 @@ class SaoOversightController extends Controller
             return response()->json(['message' => 'Concern not found.'], 404);
         }
 
-        if (!$this->isAssignedToSao($concern)) {
+        $accessMode = InterdepartmentalCoordinationController::resolveAccessMode($request->user(), $concern);
+        if (!in_array($accessMode, ['primary', 'active_collaborator', 'pco_approver'], true)) {
             return response()->json([
-                'message' => 'Unauthorized. SAO priority override is restricted to concerns explicitly assigned to the Student Affairs Office.',
+                'message' => 'Unauthorized. SAO priority override requires active Option A authorization on this concern (primary owner, active collaborator, or active PCO approver). Pending previews and historical records do not grant mutation privileges.',
             ], 403);
         }
 
@@ -672,9 +717,10 @@ class SaoOversightController extends Controller
             return response()->json(['message' => 'Concern not found.'], 404);
         }
 
-        if (!$this->isAssignedToSao($concern)) {
+        $accessMode = InterdepartmentalCoordinationController::resolveAccessMode($request->user(), $concern);
+        if (!in_array($accessMode, ['primary', 'active_collaborator', 'completed_collaborator'], true)) {
             return response()->json([
-                'message' => 'Unauthorized. In accordance with strict SAO oversight boundaries (Option A), individual concern documents may only be accessed when the concern is explicitly assigned to the Student Affairs Office.',
+                'message' => 'Unauthorized. In accordance with strict SAO oversight boundaries (Option A), individual concern documents may only be accessed when the concern is explicitly assigned to or actively shared with the Student Affairs Office.',
             ], 403);
         }
 
@@ -713,16 +759,15 @@ class SaoOversightController extends Controller
         if (!$saoDept) {
             $base = Concern::whereRaw('1 = 0');
         } else {
-            $routedIds = ConcernRouting::where(function ($q) {
-                $q->where('notes', 'like', '%SAO%')
-                  ->orWhere('notes', 'like', '%Student Affairs%');
-            })->pluck('concern_id');
-
-            $base = Concern::where(function ($q) use ($saoDept, $routedIds) {
-                $q->where('dept_id', $saoDept->id);
-                if ($routedIds->isNotEmpty()) {
-                    $q->orWhereIn('concern_id', $routedIds);
-                }
+            $saoDeptId = (int) $saoDept->id;
+            $base = Concern::where(function ($q) use ($saoDeptId) {
+                $q->where('dept_id', $saoDeptId)
+                  ->orWhereHas('collaborations', function ($col) use ($saoDeptId) {
+                      $col->where('collaborator_dept_id', $saoDeptId)->whereIn('status', ['accepted', 'completed']);
+                  })
+                  ->orWhereHas('pcoApprovalRequests', function ($pco) use ($saoDeptId) {
+                      $pco->where('approving_dept_id', $saoDeptId)->whereIn('status', ['pending', 'clarification_requested', 'approved', 'rejected', 'superseded']);
+                  });
             });
         }
 

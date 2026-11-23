@@ -3,8 +3,12 @@
 namespace App\Http\Controllers;
 
 use App\Models\Concern;
+use App\Models\ConcernCollaboration;
+use App\Models\ConcernInternalMessage;
 use App\Models\ConcernRouting;
+use App\Models\ConcernTransferRequest;
 use App\Models\Message;
+use App\Models\PcoApprovalRequest;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -54,16 +58,16 @@ class DeptStaffController extends Controller
     }
 
     /**
-     * Get the queue of concerns routed to this staff's department or academic unit.
-     * Shows concerns with target_type='department' and matching dept_id or academic_unit_id.
-     * Also shows concerns that were approved/rejected/returned back to this department.
+     * Get the queue of concerns routed to this staff's department or academic unit,
+     * plus concerns where this department is an invited/accepted/completed collaborator,
+     * a pending transfer target, or a designated PCO approving department.
      */
     public function queue(Request $request)
     {
         $user = $request->user();
 
         $query = Concern::query();
-        $this->scopeForStaff($query, $user);
+        $this->scopeForStaffWithCoordination($query, $user);
 
         $sla = app(\App\Services\ConcernSlaService::class);
         $predictor = app(\App\Services\ResolutionPredictionService::class);
@@ -76,32 +80,119 @@ class DeptStaffController extends Controller
             }, 'academicUnit', 'department', 'routingHistory.performer'])
             ->orderBy('submitted_at', 'desc')
             ->get()
-            ->map(function ($concern) use ($sla, $predictor, $dataset) {
-                if ($concern->is_anonymous) {
+            ->map(function ($concern) use ($user, $sla, $predictor, $dataset) {
+                if ($concern->is_anonymous && $concern->student) {
                     $concern->student->name = 'Anonymous';
                     $concern->student->student_id_number = '********';
                 }
-                // Read-only resolution-target status and historical prediction (not persisted)
+                // Read-only resolution-target status, historical prediction, and coordination access mode
                 $concern->sla = $sla->describe($concern);
                 $concern->prediction = $predictor->predict($concern, $dataset);
+                $concern->access_mode = InterdepartmentalCoordinationController::resolveAccessMode($user, $concern);
+                $concern->is_primary_owner = $concern->access_mode === 'primary';
                 return $concern;
             });
 
+        $userDeptId = InterdepartmentalCoordinationController::resolveUserDeptId($user);
+        $userUnitId = $user->academic_unit_id ? (int) $user->academic_unit_id : null;
+
+        $incomingTransfers = $userDeptId
+            ? ConcernTransferRequest::where('to_dept_id', $userDeptId)
+                ->where('status', 'pending')
+                ->with('concern:concern_id,title,priority,status,submitted_at')
+                ->orderByDesc('created_at')
+                ->get()
+            : collect();
+
+        $incomingCollaborations = $userDeptId
+            ? ConcernCollaboration::where('collaborator_dept_id', $userDeptId)
+                ->whereIn('status', ['pending', 'accepted'])
+                ->with('concern:concern_id,title,priority,status,submitted_at')
+                ->orderByDesc('created_at')
+                ->get()
+            : collect();
+
+        $pendingPcoApprovals = PcoApprovalRequest::whereIn('status', ['pending', 'clarification_requested'])
+            ->where(function ($q) use ($userDeptId, $userUnitId) {
+                $matched = false;
+                if ($userDeptId) {
+                    $q->where('approving_dept_id', $userDeptId);
+                    $matched = true;
+                }
+                if ($userUnitId) {
+                    if ($matched) {
+                        $q->orWhere('approving_academic_unit_id', $userUnitId);
+                    } else {
+                        $q->where('approving_academic_unit_id', $userUnitId);
+                        $matched = true;
+                    }
+                }
+                if (!$matched) {
+                    $q->whereRaw('1 = 0');
+                }
+            })
+            ->with('concern:concern_id,title,priority,status,submitted_at')
+            ->orderByDesc('created_at')
+            ->get();
+
         return response()->json([
             'concerns' => $concerns,
+            'incoming_transfers' => $incomingTransfers,
+            'incoming_collaborations' => $incomingCollaborations,
+            'pending_pco_approvals' => $pendingPcoApprovals,
         ]);
     }
 
     /**
-     * Reply to a concern (send a message to the student).
+     * Scope query to include primary owned concerns AND active/historical coordination concerns
+     * (pending transfer target, pending/accepted/completed collaborator, or PCO approving office).
+     */
+    private function scopeForStaffWithCoordination($query, User $user)
+    {
+        return $query->where(function ($outer) use ($user) {
+            $this->scopeForStaff($outer, $user);
+
+            $userDeptId = InterdepartmentalCoordinationController::resolveUserDeptId($user);
+            $userUnitId = $user->academic_unit_id ? (int) $user->academic_unit_id : null;
+
+            if ($userDeptId) {
+                $outer->orWhereHas('transferRequests', function ($tr) use ($userDeptId) {
+                    $tr->where('to_dept_id', $userDeptId)->where('status', 'pending');
+                });
+
+                $outer->orWhereHas('collaborations', function ($col) use ($userDeptId) {
+                    $col->where('collaborator_dept_id', $userDeptId)
+                        ->whereIn('status', ['pending', 'accepted', 'completed']);
+                });
+
+                $outer->orWhereHas('pcoApprovalRequests', function ($pco) use ($userDeptId) {
+                    $pco->where('approving_dept_id', $userDeptId)
+                        ->whereIn('status', ['pending', 'clarification_requested', 'approved', 'rejected', 'superseded']);
+                });
+            }
+
+            if ($userUnitId) {
+                $outer->orWhereHas('pcoApprovalRequests', function ($pco) use ($userUnitId) {
+                    $pco->where('approving_academic_unit_id', $userUnitId)
+                        ->whereIn('status', ['pending', 'clarification_requested', 'approved', 'rejected', 'superseded']);
+                });
+            }
+        });
+    }
+
+    /**
+     * Reply to a concern (send a message to the student — Primary Owner only).
      */
     public function reply(Request $request, int $id)
     {
         $user = $request->user();
 
-        $query = Concern::where('concern_id', $id);
-        $this->scopeForStaff($query, $user);
-        $concern = $query->firstOrFail();
+        $concern = Concern::findOrFail($id);
+        if (!InterdepartmentalCoordinationController::isPrimaryOwner($user, $concern)) {
+            return response()->json([
+                'message' => 'Unauthorized. Only the primary responsible department may send student-facing replies. Collaborating or approving departments must use the Internal Department Channel.',
+            ], 403);
+        }
 
         $validated = $request->validate([
             'body' => 'required|string',
@@ -139,15 +230,31 @@ class DeptStaffController extends Controller
     }
 
     /**
-     * Resolve a concern directly.
+     * Resolve a concern directly (Primary Owner only; blocked if PCO work authorization is pending/rejected).
      */
     public function resolve(Request $request, int $id)
     {
         $user = $request->user();
 
-        $query = Concern::where('concern_id', $id);
-        $this->scopeForStaff($query, $user);
-        $concern = $query->whereIn('status', ['pending', 'in_progress', 'approved', 'returned'])->firstOrFail();
+        $concern = Concern::findOrFail($id);
+        if (!InterdepartmentalCoordinationController::isPrimaryOwner($user, $concern)) {
+            return response()->json([
+                'message' => 'Unauthorized. Only the primary responsible department may resolve this concern.',
+            ], 403);
+        }
+
+        if (!in_array($concern->status, ['pending', 'in_progress', 'approved', 'returned'], true)) {
+            return response()->json([
+                'message' => 'This concern cannot be resolved from its current status (' . $concern->status . ').',
+            ], 422);
+        }
+
+        if ($blockingPco = InterdepartmentalCoordinationController::hasBlockingPcoApproval($concern)) {
+            return response()->json([
+                'message' => "Cannot resolve concern while PCO Department Approval from {$blockingPco->approving_office_name} is '{$blockingPco->status}'. Formal departmental approval must be granted before PCO can perform and complete work requiring authorization.",
+                'pco_approval_status' => $blockingPco->status,
+            ], 422);
+        }
 
         $validated = $request->validate([
             'notes' => 'nullable|string',
@@ -158,6 +265,27 @@ class DeptStaffController extends Controller
             'resolved_at' => now(),
             'last_updated' => now(),
         ]);
+
+        // Automatically close out any remaining pending transfer requests or active collaborations on resolution
+        ConcernTransferRequest::where('concern_id', $concern->concern_id)
+            ->where('status', 'pending')
+            ->update([
+                'status' => 'cancelled',
+                'decided_by' => $user->id,
+                'decided_by_name' => $user->name,
+                'decision_notes' => 'Concern resolved by primary department.',
+                'decided_at' => now(),
+            ]);
+
+        ConcernCollaboration::where('concern_id', $concern->concern_id)
+            ->where('status', 'accepted')
+            ->update([
+                'status' => 'completed',
+                'responded_by' => $user->id,
+                'responded_by_name' => $user->name,
+                'response_notes' => 'Concern resolved by primary department.',
+                'completed_at' => now(),
+            ]);
 
         ConcernRouting::create([
             'concern_id' => $concern->concern_id,
@@ -191,20 +319,30 @@ class DeptStaffController extends Controller
     }
 
     /**
-     * Update the status of a concern (pending, in_progress, resolved).
+     * Update the status of a concern (pending, in_progress, resolved — Primary Owner only).
      */
     public function updateStatus(Request $request, int $id)
     {
         $user = $request->user();
 
-        $query = Concern::where('concern_id', $id);
-        $this->scopeForStaff($query, $user);
-        $concern = $query->firstOrFail();
+        $concern = Concern::findOrFail($id);
+        if (!InterdepartmentalCoordinationController::isPrimaryOwner($user, $concern)) {
+            return response()->json([
+                'message' => 'Unauthorized. Only the primary responsible department may update the concern status.',
+            ], 403);
+        }
 
         $validated = $request->validate([
             'status' => 'required|in:pending,in_progress,resolved',
             'notes' => 'nullable|string',
         ]);
+
+        if ($validated['status'] === 'resolved' && ($blockingPco = InterdepartmentalCoordinationController::hasBlockingPcoApproval($concern))) {
+            return response()->json([
+                'message' => "Cannot resolve concern while PCO Department Approval from {$blockingPco->approving_office_name} is '{$blockingPco->status}'. Formal departmental approval must be granted first.",
+                'pco_approval_status' => $blockingPco->status,
+            ], 422);
+        }
 
         $updateData = [
             'status' => $validated['status'],
@@ -240,15 +378,31 @@ class DeptStaffController extends Controller
     }
 
     /**
-     * Escalate a concern (for Academic: to Dean; or standard escalation).
+     * Escalate a concern (for Academic: to Dean; or standard escalation — Primary Owner only).
      */
     public function escalate(Request $request, int $id)
     {
         $user = $request->user();
 
-        $query = Concern::where('concern_id', $id);
-        $this->scopeForStaff($query, $user);
-        $concern = $query->whereIn('status', ['pending', 'in_progress', 'returned'])->firstOrFail();
+        $concern = Concern::findOrFail($id);
+        if (!InterdepartmentalCoordinationController::isPrimaryOwner($user, $concern)) {
+            return response()->json([
+                'message' => 'Unauthorized. Only the primary responsible department may escalate this concern.',
+            ], 403);
+        }
+
+        if (!in_array($concern->status, ['pending', 'in_progress', 'returned'], true)) {
+            return response()->json([
+                'message' => 'This concern cannot be escalated from its current status.',
+            ], 422);
+        }
+
+        if ($blockingPco = InterdepartmentalCoordinationController::hasBlockingPcoApproval($concern)) {
+            return response()->json([
+                'message' => "Cannot escalate concern while PCO Department Approval from {$blockingPco->approving_office_name} is '{$blockingPco->status}'.",
+                'pco_approval_status' => $blockingPco->status,
+            ], 422);
+        }
 
         $validated = $request->validate([
             'notes' => 'nullable|string',
@@ -318,99 +472,43 @@ class DeptStaffController extends Controller
     }
 
     /**
-     * Transfer a concern to a different department or academic unit.
+     * Transfer a concern to a different department.
+     * Direct unilateral ownership updates are disabled; all operational transfers must go through
+     * the handshake transfer lifecycle (initiateTransfer -> acceptTransfer).
      */
     public function transfer(Request $request, int $id)
     {
         $user = $request->user();
 
-        $query = Concern::where('concern_id', $id);
-        $this->scopeForStaff($query, $user);
-        $concern = $query->whereIn('status', ['pending', 'in_progress'])->firstOrFail();
-
-        $validated = $request->validate([
-            'target_category' => 'required|in:operational_departments,academic_units',
-            'target_id' => 'required|integer',
-            'notes' => 'nullable|string',
-        ]);
-
-        $oldTarget = $concern->category === 'academic_units' ? ($concern->academicUnit->name ?? 'Unknown') : ($concern->department->name ?? 'Unknown');
-
-        // Update target
-        if ($validated['target_category'] === 'academic_units') {
-            $unit = \App\Models\AcademicUnit::findOrFail($validated['target_id']);
-            $concern->update([
-                'category' => 'academic_units',
-                'workflow_type' => 'academic',
-                'academic_unit_id' => $unit->id,
-                'dept_id' => null,
-                'transferred_from' => $oldTarget,
-                'last_updated' => now(),
-            ]);
-            $newTarget = $unit->name;
-        } else {
-            $dept = \App\Models\Department::findOrFail($validated['target_id']);
-            $concern->update([
-                'category' => 'operational_departments',
-                'workflow_type' => 'non_academic',
-                'dept_id' => $dept->id,
-                'transferred_from' => $oldTarget,
-                'last_updated' => now(),
-            ]);
-            $newTarget = $dept->name;
+        $concern = Concern::findOrFail($id);
+        if (!InterdepartmentalCoordinationController::isPrimaryOwner($user, $concern)) {
+            return response()->json([
+                'message' => 'Unauthorized. Only the current primary owner department may initiate a concern transfer.',
+            ], 403);
         }
 
-        $transferNotes = "Transferred from {$oldTarget} to {$newTarget}.";
-        if (!empty($validated['notes'])) {
-            $transferNotes .= " Reason: " . $validated['notes'];
-        }
-
-        ConcernRouting::create([
-            'concern_id' => $concern->concern_id,
-            'action' => 'transferred',
-            'performed_by' => $user->id,
-            'notes' => $transferNotes,
-        ]);
-
-        // Phase 6.1: Re-evaluate recurrence grouping in new department context
-        if ($concern->recurring_incident_id) {
-            app(\App\Services\RecurrenceDetectionService::class)->unlinkConcern($concern, $user->id);
-        }
-        try {
-            app(\App\Services\RecurrenceDetectionService::class)->processConcern($concern->fresh());
-        } catch (\Throwable $re) {
-            \Illuminate\Support\Facades\Log::warning('Recurrence detection failed after transfer: ' . $re->getMessage());
-        }
-
-        // Phase 6.1: If concern is Critical, notify the new department staff
-        if ($concern->fresh()->priority === 'critical') {
-            $concern->update(['critical_notified_at' => null]);
-            try {
-                \App\Notifications\ConcernWorkflowNotification::sendCriticalConcernNotification(
-                    $concern->fresh(),
-                    'Department Transfer'
-                );
-            } catch (\Throwable $ce) {
-                \Illuminate\Support\Facades\Log::warning('Critical notification failed after transfer: ' . $ce->getMessage());
-            }
+        // Delegate valid handshake transfer payloads to InterdepartmentalCoordinationController@initiateTransfer
+        if ($request->filled('to_dept_id') && $request->filled('transfer_reason') && $request->filled('handoff_summary')) {
+            return app(InterdepartmentalCoordinationController::class)->initiateTransfer($request, $id);
         }
 
         return response()->json([
-            'message' => 'Concern transferred successfully.',
-        ]);
+            'message' => 'Direct unilateral concern transfers are disabled. All department transfers must use the handshake transfer workflow (to_dept_id, transfer_reason, and handoff_summary) and require explicit acceptance by the receiving department before ownership changes.',
+            'errors' => [
+                'to_dept_id' => ['The receiving department (to_dept_id), transfer_reason, and handoff_summary are required for handshake transfers.'],
+            ],
+        ], 422);
     }
 
     /**
      * Get a specific concern's full details for authorized department staff.
+     * Supports primary owners, collaborators, PCO approving departments, and limited preview for pending transfer targets.
      */
     public function show(Request $request, int $id)
     {
         $user = $request->user();
 
-        $query = Concern::where('concern_id', $id);
-        $this->scopeForStaff($query, $user);
-
-        $concern = $query->with([
+        $concern = Concern::with([
             'academicUnit',
             'department',
             'cadSubmittedBy:id,name,email',
@@ -420,7 +518,18 @@ class DeptStaffController extends Controller
             'student' => function ($q) {
                 $q->select('id', 'name', 'student_id_number', 'academic_unit_id', 'email');
             }
-        ])->firstOrFail();
+        ])->find($id);
+
+        if (!$concern) {
+            return response()->json(['message' => 'Concern not found.'], 404);
+        }
+
+        $accessMode = InterdepartmentalCoordinationController::resolveAccessMode($user, $concern);
+        if (!$accessMode) {
+            return response()->json([
+                'message' => 'Concern not found in your department queue.',
+            ], 404);
+        }
 
         if ($concern->is_anonymous && $concern->student) {
             $concern->student->name = 'Anonymous';
@@ -428,8 +537,15 @@ class DeptStaffController extends Controller
             $concern->student->email = 'anonymous@university.edu';
         }
 
+        // Pending transfer targets and pending collaborators receive LIMITED preview + handoff/invitation context only
+        if (in_array($accessMode, ['pending_transfer_target', 'pending_collaborator'], true)) {
+            $concern->setRelation('messages', collect());
+            $concern->attachments = [];
+        }
+
         $concern->sla = app(\App\Services\ConcernSlaService::class)->describe($concern);
         $concern->prediction = app(\App\Services\ResolutionPredictionService::class)->predict($concern);
+        $concern->coordination = InterdepartmentalCoordinationController::buildCoordinationPayload($user, $concern);
 
         return response()->json([
             'concern' => $concern,
@@ -437,15 +553,21 @@ class DeptStaffController extends Controller
     }
 
     /**
-     * Get messages for a specific concern.
+     * Get messages for a specific concern (Student-facing thread).
+     * Hidden from pending transfer targets until they accept the transfer.
      */
     public function getMessages(Request $request, int $id)
     {
         $user = $request->user();
 
-        $query = Concern::where('concern_id', $id);
-        $this->scopeForStaff($query, $user);
-        $concern = $query->firstOrFail();
+        $concern = Concern::findOrFail($id);
+        $accessMode = InterdepartmentalCoordinationController::resolveAccessMode($user, $concern);
+
+        if (!in_array($accessMode, ['primary', 'active_collaborator', 'completed_collaborator', 'pco_approver', 'pco_approver_readonly'], true)) {
+            return response()->json([
+                'message' => 'Unauthorized. Pending transfer targets and pending collaborators only receive limited preview context until accepted.',
+            ], 403);
+        }
 
         $messages = Message::where('concern_id', $concern->concern_id)
             ->with('sender:id,name,role')
@@ -986,9 +1108,16 @@ class DeptStaffController extends Controller
     {
         $user = $request->user();
 
-        $query = Concern::where('concern_id', $id);
-        $this->scopeForStaff($query, $user);
-        $concern = $query->firstOrFail();
+        $concern = Concern::findOrFail($id);
+        $accessMode = InterdepartmentalCoordinationController::resolveAccessMode($user, $concern);
+        if (!$accessMode) {
+            return response()->json(['message' => 'Concern not found in your department scope.'], 404);
+        }
+        if ($accessMode !== 'primary') {
+            return response()->json([
+                'message' => 'Unauthorized. Only the primary responsible department may generate CAD approval documents.',
+            ], 403);
+        }
 
         // CAD approval workflow strictly applies to non-academic / operational concerns
         if ($concern->workflow_type === 'academic' || $concern->category === 'academic_units') {
@@ -1081,9 +1210,16 @@ class DeptStaffController extends Controller
     {
         $user = $request->user();
 
-        $query = Concern::where('concern_id', $id);
-        $this->scopeForStaff($query, $user);
-        $concern = $query->firstOrFail();
+        $concern = Concern::findOrFail($id);
+        $accessMode = InterdepartmentalCoordinationController::resolveAccessMode($user, $concern);
+        if (!$accessMode) {
+            return response()->json(['message' => 'Concern not found in your department scope.'], 404);
+        }
+        if ($accessMode !== 'primary') {
+            return response()->json([
+                'message' => 'Unauthorized. Only the primary responsible department may generate CAD approval documents.',
+            ], 403);
+        }
 
         if ($concern->workflow_type === 'academic' || $concern->category === 'academic_units') {
             return response()->json([
@@ -1151,9 +1287,16 @@ class DeptStaffController extends Controller
     {
         $user = $request->user();
 
-        $query = Concern::where('concern_id', $id);
-        $this->scopeForStaff($query, $user);
-        $concern = $query->firstOrFail();
+        $concern = Concern::findOrFail($id);
+        $accessMode = InterdepartmentalCoordinationController::resolveAccessMode($user, $concern);
+        if (!$accessMode) {
+            return response()->json(['message' => 'Concern not found in your department scope.'], 404);
+        }
+        if ($accessMode !== 'primary') {
+            return response()->json([
+                'message' => 'Unauthorized. Only the primary responsible department may generate CAD approval documents.',
+            ], 403);
+        }
 
         if ($concern->workflow_type === 'academic' || $concern->category === 'academic_units') {
             return response()->json([
@@ -1250,9 +1393,16 @@ class DeptStaffController extends Controller
         $user = $request->user();
 
         // Scope to staff department
-        $query = Concern::where('concern_id', $id);
-        $this->scopeForStaff($query, $user);
-        $concern = $query->firstOrFail();
+        $concern = Concern::findOrFail($id);
+        $accessMode = InterdepartmentalCoordinationController::resolveAccessMode($user, $concern);
+        if (!$accessMode) {
+            return response()->json(['message' => 'Concern not found in your department scope.'], 404);
+        }
+        if ($accessMode !== 'primary') {
+            return response()->json([
+                'message' => 'Unauthorized. Only the primary responsible department may generate CAD approval documents.',
+            ], 403);
+        }
 
         $diskName = config('filesystems.cad_disk', 'local');
         $disk = Storage::disk($diskName);

@@ -673,21 +673,12 @@ class ConcernController extends Controller
         return match ($user->role) {
             'student' => (int) $concern->student_id === (int) $user->id,
 
-            'dept_staff' => (function () use ($user, $concern): bool {
-                if ($user->dept_id && (int) $concern->dept_id === (int) $user->dept_id) {
-                    return true;
-                }
-                if ($user->academic_unit_id && (int) $concern->academic_unit_id === (int) $user->academic_unit_id) {
-                    $isAcademic = $concern->workflow_type === 'academic'
-                        || ($concern->category === 'academic_units' && is_null($concern->dept_id));
-                    if ($isAcademic) {
-                        return true;
-                    }
-                }
-                return false;
-            })(),
+            'dept_staff' => InterdepartmentalCoordinationController::canAccessConcernAttachments($user, $concern),
 
             'dean' => (function () use ($user, $concern): bool {
+                if (InterdepartmentalCoordinationController::canAccessConcernAttachments($user, $concern)) {
+                    return true;
+                }
                 if (!$user->academic_unit_id || (int) $concern->academic_unit_id !== (int) $user->academic_unit_id) {
                     return false;
                 }
@@ -699,23 +690,7 @@ class ConcernController extends Controller
                     || in_array($concern->status, ['escalated', 'approved', 'returned', 'rejected', 'resolved'], true);
             })(),
 
-            'sao' => (function () use ($concern): bool {
-                $saoDept = \App\Models\Department::where('name', 'like', '%SAO%')
-                    ->orWhere('name', 'like', '%Student Affairs%')
-                    ->first();
-                if ($saoDept && (int) $concern->dept_id === (int) $saoDept->id) {
-                    return true;
-                }
-                if ($saoDept) {
-                    return ConcernRouting::where('concern_id', $concern->concern_id)
-                        ->where(function ($q) {
-                            $q->where('notes', 'like', '%SAO%')
-                              ->orWhere('notes', 'like', '%Student Affairs%');
-                        })
-                        ->exists();
-                }
-                return false;
-            })(),
+            'sao' => InterdepartmentalCoordinationController::canAccessConcernAttachments($user, $concern),
 
             'admin' => true,
 

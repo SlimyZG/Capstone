@@ -33,7 +33,25 @@ class ConcernSlaService
     public const SYSTEM_ACTOR = 'System (Automatic SLA Monitor)';
 
     /** Internal audit actions that must never be shown to students. */
-    public const INTERNAL_ACTIONS = [self::ACTION_FOLLOWUP, self::ACTION_DEADLINE];
+    public const INTERNAL_ACTIONS = [
+        self::ACTION_FOLLOWUP,
+        self::ACTION_DEADLINE,
+        'transfer_requested',
+        'transfer_declined',
+        'transfer_cancelled',
+        'collaboration_requested',
+        'collaboration_accepted',
+        'collaboration_declined',
+        'collaboration_completed',
+        'collaboration_revoked',
+        'pco_approval_requested',
+        'pco_approval_clarification_requested',
+        'pco_approval_clarification_provided',
+        'pco_approval_approved',
+        'pco_approval_rejected',
+        'pco_approval_cancelled',
+        'pco_approval_scope_amended',
+    ];
 
     public function isEnabled(): bool
     {

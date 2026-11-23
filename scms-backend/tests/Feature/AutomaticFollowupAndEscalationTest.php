@@ -425,12 +425,20 @@ class AutomaticFollowupAndEscalationTest extends TestCase
             'submitted_at'     => now()->subHours(95),
         ]);
 
-        // Transfer from EDP to Cashier BEFORE scheduler runs
-        $this->actingAs($this->edpStaff)
-            ->postJson("/api/dept-staff/concerns/{$concern->concern_id}/transfer", [
-                'target_category' => 'operational_departments',
-                'target_id'       => $this->cashierDept->id,
-                'notes'           => 'Billing issue belongs to Cashier.',
+        // Transfer from EDP to Cashier BEFORE scheduler runs using handshake transfer + acceptance
+        $initTransferRes = $this->actingAs($this->edpStaff)
+            ->postJson("/api/dept-staff/concerns/{$concern->concern_id}/transfers", [
+                'to_dept_id'      => $this->cashierDept->id,
+                'transfer_reason' => 'Billing issue belongs to Cashier.',
+                'handoff_summary' => 'Please verify official receipt and portal posting.',
+            ])
+            ->assertCreated();
+
+        $transferId = $initTransferRes->json('transfer_request.id');
+
+        $this->actingAs($this->cashierStaff)
+            ->postJson("/api/dept-staff/concerns/{$concern->concern_id}/transfers/{$transferId}/accept", [
+                'decision_notes' => 'Accepted by Cashier.',
             ])
             ->assertOk();
 

@@ -5,6 +5,7 @@ use App\Http\Controllers\AuthController;
 use App\Http\Controllers\ConcernController;
 use App\Http\Controllers\DeanController;
 use App\Http\Controllers\DeptStaffController;
+use App\Http\Controllers\InterdepartmentalCoordinationController;
 use App\Http\Controllers\RecurringIncidentController;
 use App\Http\Controllers\SaoSelfServiceController;
 use App\Http\Controllers\StudentSelfServiceController;
@@ -68,6 +69,24 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/concerns/{id}/cad/signed-document', [\App\Http\Controllers\SaoOversightController::class, 'downloadCadSignedDocument']);
         Route::post('/concerns/{id}/priority-override', [\App\Http\Controllers\SaoOversightController::class, 'priorityOverride']);
         Route::post('/concerns/{id}/reply', [\App\Http\Controllers\SaoOversightController::class, 'reply']);
+
+        // Interdepartmental Coordination (SAO under Option A)
+        Route::post('/concerns/{id}/transfers', [InterdepartmentalCoordinationController::class, 'initiateTransfer'])->whereNumber('id');
+        Route::post('/concerns/{id}/transfers/{transferId}/accept', [InterdepartmentalCoordinationController::class, 'acceptTransfer'])->whereNumber(['id', 'transferId']);
+        Route::post('/concerns/{id}/transfers/{transferId}/decline', [InterdepartmentalCoordinationController::class, 'declineTransfer'])->whereNumber(['id', 'transferId']);
+        Route::post('/concerns/{id}/transfers/{transferId}/cancel', [InterdepartmentalCoordinationController::class, 'cancelTransfer'])->whereNumber(['id', 'transferId']);
+        Route::post('/concerns/{id}/collaborations', [InterdepartmentalCoordinationController::class, 'requestCollaboration'])->whereNumber('id');
+        Route::post('/concerns/{id}/collaborations/{collabId}/accept', [InterdepartmentalCoordinationController::class, 'acceptCollaboration'])->whereNumber(['id', 'collabId']);
+        Route::post('/concerns/{id}/collaborations/{collabId}/decline', [InterdepartmentalCoordinationController::class, 'declineCollaboration'])->whereNumber(['id', 'collabId']);
+        Route::post('/concerns/{id}/collaborations/{collabId}/complete', [InterdepartmentalCoordinationController::class, 'completeCollaboration'])->whereNumber(['id', 'collabId']);
+        Route::post('/concerns/{id}/collaborations/{collabId}/revoke', [InterdepartmentalCoordinationController::class, 'revokeCollaboration'])->whereNumber(['id', 'collabId']);
+        Route::post('/concerns/{id}/pco-approvals/{requestId}/approve', [InterdepartmentalCoordinationController::class, 'approvePcoRequest'])->whereNumber(['id', 'requestId']);
+        Route::post('/concerns/{id}/pco-approvals/{requestId}/reject', [InterdepartmentalCoordinationController::class, 'rejectPcoRequest'])->whereNumber(['id', 'requestId']);
+        Route::post('/concerns/{id}/pco-approvals/{requestId}/request-clarification', [InterdepartmentalCoordinationController::class, 'requestPcoClarification'])->whereNumber(['id', 'requestId']);
+        Route::get('/concerns/{id}/pco-approvals/{requestId}/attachments/{index}', [InterdepartmentalCoordinationController::class, 'showPcoAttachment'])->whereNumber(['id', 'requestId', 'index']);
+        Route::get('/concerns/{id}/internal-messages', [InterdepartmentalCoordinationController::class, 'getInternalMessages'])->whereNumber('id');
+        Route::post('/concerns/{id}/internal-messages', [InterdepartmentalCoordinationController::class, 'postInternalMessage'])->whereNumber('id');
+
         Route::get('/recurring-incidents', [RecurringIncidentController::class, 'saoIndex']);
         Route::get('/recurring-incidents/{id}', [RecurringIncidentController::class, 'saoShow']);
         Route::post('/recurring-incidents/{id}/priority-override', [RecurringIncidentController::class, 'saoPriorityOverride']);
@@ -124,6 +143,27 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/concerns/{id}/cad/upload-decision', [DeptStaffController::class, 'uploadCadDecision']);
         Route::get('/concerns/{id}/cad/signed-document', [DeptStaffController::class, 'downloadCadSignedDocument']);
         Route::get('/concerns/{id}/messages', [DeptStaffController::class, 'getMessages']);
+
+        // Interdepartmental Coordination: Unlimited Handshake Transfers, Collaboration, PCO Approval, & Internal Channel
+        Route::post('/concerns/{id}/transfers', [InterdepartmentalCoordinationController::class, 'initiateTransfer'])->whereNumber('id');
+        Route::post('/concerns/{id}/transfers/{transferId}/accept', [InterdepartmentalCoordinationController::class, 'acceptTransfer'])->whereNumber(['id', 'transferId']);
+        Route::post('/concerns/{id}/transfers/{transferId}/decline', [InterdepartmentalCoordinationController::class, 'declineTransfer'])->whereNumber(['id', 'transferId']);
+        Route::post('/concerns/{id}/transfers/{transferId}/cancel', [InterdepartmentalCoordinationController::class, 'cancelTransfer'])->whereNumber(['id', 'transferId']);
+        Route::post('/concerns/{id}/collaborations', [InterdepartmentalCoordinationController::class, 'requestCollaboration'])->whereNumber('id');
+        Route::post('/concerns/{id}/collaborations/{collabId}/accept', [InterdepartmentalCoordinationController::class, 'acceptCollaboration'])->whereNumber(['id', 'collabId']);
+        Route::post('/concerns/{id}/collaborations/{collabId}/decline', [InterdepartmentalCoordinationController::class, 'declineCollaboration'])->whereNumber(['id', 'collabId']);
+        Route::post('/concerns/{id}/collaborations/{collabId}/complete', [InterdepartmentalCoordinationController::class, 'completeCollaboration'])->whereNumber(['id', 'collabId']);
+        Route::post('/concerns/{id}/collaborations/{collabId}/revoke', [InterdepartmentalCoordinationController::class, 'revokeCollaboration'])->whereNumber(['id', 'collabId']);
+        Route::post('/concerns/{id}/pco-approvals', [InterdepartmentalCoordinationController::class, 'submitPcoApprovalRequest'])->whereNumber('id');
+        Route::post('/concerns/{id}/pco-approvals/{requestId}/approve', [InterdepartmentalCoordinationController::class, 'approvePcoRequest'])->whereNumber(['id', 'requestId']);
+        Route::post('/concerns/{id}/pco-approvals/{requestId}/reject', [InterdepartmentalCoordinationController::class, 'rejectPcoRequest'])->whereNumber(['id', 'requestId']);
+        Route::post('/concerns/{id}/pco-approvals/{requestId}/request-clarification', [InterdepartmentalCoordinationController::class, 'requestPcoClarification'])->whereNumber(['id', 'requestId']);
+        Route::post('/concerns/{id}/pco-approvals/{requestId}/provide-clarification', [InterdepartmentalCoordinationController::class, 'providePcoClarification'])->whereNumber(['id', 'requestId']);
+        Route::post('/concerns/{id}/pco-approvals/{requestId}/cancel', [InterdepartmentalCoordinationController::class, 'cancelPcoRequest'])->whereNumber(['id', 'requestId']);
+        Route::get('/concerns/{id}/pco-approvals/{requestId}/attachments/{index}', [InterdepartmentalCoordinationController::class, 'showPcoAttachment'])->whereNumber(['id', 'requestId', 'index']);
+        Route::get('/concerns/{id}/internal-messages', [InterdepartmentalCoordinationController::class, 'getInternalMessages'])->whereNumber('id');
+        Route::post('/concerns/{id}/internal-messages', [InterdepartmentalCoordinationController::class, 'postInternalMessage'])->whereNumber('id');
+
         // Reports
         Route::get('/reports', [DeptStaffController::class, 'getReport']);
         Route::get('/reports/export-csv', [DeptStaffController::class, 'exportCsv']);
@@ -145,6 +185,14 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/concerns/{id}/reply', [DeanController::class, 'reply']);
         Route::post('/concerns/{id}/priority-override', [DeanController::class, 'priorityOverride']);
         Route::get('/concerns/{id}/messages', [DeanController::class, 'getMessages']);
+
+        // PCO Department Approval & Internal Messages when Academic Unit is configured as an eligible approving unit
+        Route::post('/concerns/{id}/pco-approvals/{requestId}/approve', [InterdepartmentalCoordinationController::class, 'approvePcoRequest'])->whereNumber(['id', 'requestId']);
+        Route::post('/concerns/{id}/pco-approvals/{requestId}/reject', [InterdepartmentalCoordinationController::class, 'rejectPcoRequest'])->whereNumber(['id', 'requestId']);
+        Route::post('/concerns/{id}/pco-approvals/{requestId}/request-clarification', [InterdepartmentalCoordinationController::class, 'requestPcoClarification'])->whereNumber(['id', 'requestId']);
+        Route::get('/concerns/{id}/pco-approvals/{requestId}/attachments/{index}', [InterdepartmentalCoordinationController::class, 'showPcoAttachment'])->whereNumber(['id', 'requestId', 'index']);
+        Route::get('/concerns/{id}/internal-messages', [InterdepartmentalCoordinationController::class, 'getInternalMessages'])->whereNumber('id');
+        Route::post('/concerns/{id}/internal-messages', [InterdepartmentalCoordinationController::class, 'postInternalMessage'])->whereNumber('id');
         
         // Class List Management
         Route::get('/class-list', [\App\Http\Controllers\DeanClassListController::class, 'index']);

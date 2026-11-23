@@ -183,6 +183,47 @@ class Concern extends Model
     }
 
     /**
+     * Get all interdepartmental transfer requests for this concern.
+     */
+    public function transferRequests(): HasMany
+    {
+        return $this->hasMany(ConcernTransferRequest::class, 'concern_id', 'concern_id')
+            ->orderBy('created_at', 'desc')
+            ->orderBy('id', 'desc');
+    }
+
+    /**
+     * Get all interdepartmental collaboration records for this concern.
+     */
+    public function collaborations(): HasMany
+    {
+        return $this->hasMany(ConcernCollaboration::class, 'concern_id', 'concern_id')
+            ->orderBy('created_at', 'desc')
+            ->orderBy('id', 'desc');
+    }
+
+    /**
+     * Get all PCO department approval requests for this concern.
+     */
+    public function pcoApprovalRequests(): HasMany
+    {
+        return $this->hasMany(PcoApprovalRequest::class, 'concern_id', 'concern_id')
+            ->orderBy('created_at', 'desc')
+            ->orderBy('id', 'desc');
+    }
+
+    /**
+     * Get internal department-only messages for this concern.
+     * NEVER eager-load on student-facing endpoints.
+     */
+    public function internalMessages(): HasMany
+    {
+        return $this->hasMany(ConcernInternalMessage::class, 'concern_id', 'concern_id')
+            ->orderBy('created_at', 'asc')
+            ->orderBy('id', 'asc');
+    }
+
+    /**
      * Get metadata describing the source and status of AI sentiment/summary analysis.
      * Internal token usage is strictly restricted to authorized staff roles.
      */

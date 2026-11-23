@@ -24,6 +24,11 @@ import AiSummaryCard from '../components/AiSummaryCard';
 import SlaStatusBadge from '../components/SlaStatusBadge';
 import SlaTrackingCard from '../components/SlaTrackingCard';
 import ConcernAttachments from '../components/ConcernAttachments';
+import {
+  CoordinationActionBanners,
+  InternalDepartmentChannelCard,
+  CoordinationOwnershipSidebarCard,
+} from '../components/InterdepartmentalCoordinationPanel';
 
 const SaoConcernDetails = () => {
   const { id } = useParams();
@@ -178,6 +183,10 @@ const SaoConcernDetails = () => {
   const studentName = concern.student?.name || (concern.is_anonymous ? 'Anonymous Student' : 'Student');
   const studentId = concern.student?.student_id_number || (concern.is_anonymous ? '********' : '—');
   const departmentName = concern.department?.name || 'Student Affairs Office';
+  const isPrimaryOwner = concern.coordination ? concern.coordination.is_primary_owner : true;
+  const canSaoOverridePriority = ['primary', 'active_collaborator', 'pco_approver'].includes(
+    concern.coordination?.access_mode || 'primary'
+  );
 
   return (
     <div className="pb-12 max-w-6xl mx-auto">
@@ -188,6 +197,15 @@ const SaoConcernDetails = () => {
         </Link>
         <span className="mx-2">›</span>
         <span className="font-medium text-slate-700">Case #SAO-{concern.concern_id.toString().padStart(4, '0')}</span>
+      </div>
+
+      {/* Interdepartmental Coordination Action Banners */}
+      <div className="mb-6">
+        <CoordinationActionBanners
+          concern={concern}
+          routePrefix="/sao"
+          onRefresh={fetchConcernData}
+        />
       </div>
 
       {/* Header */}
@@ -274,15 +292,31 @@ const SaoConcernDetails = () => {
             )}
           </div>
 
-          {/* Communication Thread */}
+          {/* Dedicated Internal Department Communication Channel */}
+          <InternalDepartmentChannelCard
+            concern={concern}
+            routePrefix="/sao"
+            onRefresh={fetchConcernData}
+          />
+
+          {/* Student-Facing Communication Thread */}
           <div id="messages" className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col h-[450px]">
             <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
-              <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wider">Messages & Remarks</h2>
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-bold text-slate-900 uppercase tracking-wider">Student Messages &amp; Remarks</h2>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                  Student-Visible
+                </span>
+              </div>
               <span className="text-xs text-slate-400">{messages.length} messages</span>
             </div>
 
             <div className="flex-1 overflow-y-auto p-5 space-y-4 bg-slate-50/50">
-              {messages.length === 0 ? (
+              {concern.coordination?.access_mode === 'pending_transfer_target' ? (
+                <div className="text-center text-slate-400 text-xs py-10">
+                  Student communication thread is hidden during transfer preview until SAO accepts primary ownership.
+                </div>
+              ) : messages.length === 0 ? (
                 <div className="text-center text-slate-400 text-xs py-10">No messages in this thread yet.</div>
               ) : (
                 messages.map((msg, idx) => {
@@ -309,22 +343,28 @@ const SaoConcernDetails = () => {
             </div>
 
             <div className="p-4 bg-white border-t border-slate-200">
-              <form onSubmit={handleSendMessage} className="flex items-center gap-2">
-                <input
-                  type="text"
-                  className="flex-1 px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
-                  placeholder="Type an official SAO response or administrative remark..."
-                  value={newMessage}
-                  onChange={(e) => setNewMessage(e.target.value)}
-                />
-                <button
-                  type="submit"
-                  disabled={!newMessage.trim()}
-                  className="px-4 py-2.5 bg-[#1e3a8a] hover:bg-blue-900 text-white rounded-xl text-xs sm:text-sm font-semibold transition-colors disabled:opacity-50"
-                >
-                  Send
-                </button>
-              </form>
+              {isPrimaryOwner ? (
+                <form onSubmit={handleSendMessage} className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    className="flex-1 px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                    placeholder="Type an official SAO response or administrative remark..."
+                    value={newMessage}
+                    onChange={(e) => setNewMessage(e.target.value)}
+                  />
+                  <button
+                    type="submit"
+                    disabled={!newMessage.trim()}
+                    className="px-4 py-2.5 bg-[#1e3a8a] hover:bg-blue-900 text-white rounded-xl text-xs sm:text-sm font-semibold transition-colors disabled:opacity-50"
+                  >
+                    Send
+                  </button>
+                </form>
+              ) : (
+                <div className="text-xs text-slate-500 bg-slate-50 px-3.5 py-2.5 rounded-xl border border-slate-200">
+                  Only the primary responsible department (<span className="font-bold text-slate-700">{departmentName}</span>) may send student-facing replies. Use the <span className="font-bold text-indigo-800">Internal Department Channel</span> above to coordinate.
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -333,6 +373,13 @@ const SaoConcernDetails = () => {
         <div className="space-y-6">
           {/* Resolution Timeframe & Automatic Follow-up Card */}
           <SlaTrackingCard concern={concern} />
+
+          {/* Interdepartmental Coordination Card */}
+          <CoordinationOwnershipSidebarCard
+            concern={concern}
+            routePrefix="/sao"
+            onRefresh={fetchConcernData}
+          />
 
           {/* Metadata Card */}
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
@@ -369,13 +416,15 @@ const SaoConcernDetails = () => {
               <div className="pt-3 border-t border-slate-100">
                 <div className="flex items-center justify-between mb-1.5">
                   <p className="text-slate-400 font-semibold">Priority</p>
-                  <button
-                    type="button"
-                    onClick={openOverrideModal}
-                    className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
-                  >
-                    <Sliders size={12} /> Override Priority
-                  </button>
+                  {canSaoOverridePriority && (
+                    <button
+                      type="button"
+                      onClick={openOverrideModal}
+                      className="inline-flex items-center gap-1 text-[11px] font-bold text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
+                    >
+                      <Sliders size={12} /> Override Priority
+                    </button>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-2">

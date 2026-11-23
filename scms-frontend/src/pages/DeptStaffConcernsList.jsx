@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search, Eye, Filter, FolderOpen } from 'lucide-react';
+import { Search, Eye, Filter, FolderOpen, ArrowRightLeft, Users, ShieldCheck, Building2 } from 'lucide-react';
 import api from '../api';
 import PageHeader from '../components/PageHeader';
 import StatusBadge from '../components/StatusBadge';
@@ -10,12 +10,27 @@ import AiCategoryBadge from '../components/AiCategoryBadge';
 import EmptyState from '../components/EmptyState';
 import PaginationControls from '../components/PaginationControls';
 
+const COORDINATION_BADGE_MAP = {
+  primary: { label: 'Primary Owner', className: 'bg-blue-50 text-blue-700 border-blue-200' },
+  active_collaborator: { label: 'Active Collaborator', className: 'bg-indigo-50 text-indigo-700 border-indigo-200' },
+  collaborator: { label: 'Active Collaborator', className: 'bg-indigo-50 text-indigo-700 border-indigo-200' },
+  pending_collaborator: { label: 'Collaboration Invite', className: 'bg-amber-50 text-amber-800 border-amber-300' },
+  completed_collaborator: { label: 'Completed Collaborator', className: 'bg-slate-100 text-slate-600 border-slate-200' },
+  pending_transfer_target: { label: 'Incoming Transfer Preview', className: 'bg-amber-100 text-amber-900 border-amber-300' },
+  pco_approver: { label: 'PCO Approval Review', className: 'bg-purple-50 text-purple-700 border-purple-200' },
+  pco_approver_readonly: { label: 'PCO Approver (Read-Only)', className: 'bg-slate-100 text-slate-600 border-slate-200' },
+};
+
 const DeptStaffConcernsList = () => {
   const [concerns, setConcerns] = useState([]);
+  const [incomingTransfers, setIncomingTransfers] = useState([]);
+  const [incomingCollaborations, setIncomingCollaborations] = useState([]);
+  const [pendingPcoApprovals, setPendingPcoApprovals] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [priorityFilter, setPriorityFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('Active (New & In Progress)');
+  const [roleFilter, setRoleFilter] = useState('all');
   const [currentPage, setCurrentPage] = useState(1);
   const pageSize = 10;
   const navigate = useNavigate();
@@ -25,6 +40,9 @@ const DeptStaffConcernsList = () => {
       try {
         const res = await api.get('/dept-staff/queue');
         setConcerns(res.data.concerns || []);
+        setIncomingTransfers(res.data.incoming_transfers || []);
+        setIncomingCollaborations(res.data.incoming_collaborations || []);
+        setPendingPcoApprovals(res.data.pending_pco_approvals || []);
       } catch (err) {
         console.error(err);
       } finally {
@@ -52,13 +70,20 @@ const DeptStaffConcernsList = () => {
         : (c.priority || '').toLowerCase() === priorityFilter.toLowerCase();
 
       let matchStatus = true;
-      if (statusFilter === 'Active (New & In Progress)') matchStatus = ['pending', 'in_progress'].includes(c.status);
+      if (statusFilter === 'Active (New & In Progress)') matchStatus = ['pending', 'in_progress', 'approved', 'returned'].includes(c.status);
       else if (statusFilter === 'Resolved') matchStatus = c.status === 'resolved';
       else if (statusFilter === 'Escalated') matchStatus = c.status === 'escalated';
 
-      return matchSearch && matchPriority && matchStatus;
+      let matchRole = true;
+      const mode = c.access_mode || 'primary';
+      if (roleFilter === 'primary') matchRole = mode === 'primary';
+      else if (roleFilter === 'transfers') matchRole = mode === 'pending_transfer_target';
+      else if (roleFilter === 'collaborations') matchRole = ['active_collaborator', 'collaborator', 'pending_collaborator', 'completed_collaborator'].includes(mode);
+      else if (roleFilter === 'pco_approvals') matchRole = ['pco_approver', 'pco_approver_readonly'].includes(mode);
+
+      return matchSearch && matchPriority && matchStatus && matchRole;
     });
-  }, [concerns, searchTerm, priorityFilter, statusFilter]);
+  }, [concerns, searchTerm, priorityFilter, statusFilter, roleFilter]);
 
   const totalPages = Math.ceil(filteredConcerns.length / pageSize);
   const paginatedConcerns = useMemo(() => {
@@ -71,8 +96,45 @@ const DeptStaffConcernsList = () => {
       <PageHeader
         category="Department Portal"
         title="Department Concern Queue"
-        subtitle="Review, investigate, escalate, and resolve student concerns assigned directly to your department."
+        subtitle="Review, coordinate, transfer, collaborate, and resolve student concerns assigned or shared with your department."
       />
+
+      {/* Coordination Quick Filter Pills */}
+      <div className="flex flex-wrap items-center gap-2">
+        {[
+          { key: 'all', label: 'All Accessible Concerns', count: concerns.length, icon: Building2 },
+          { key: 'primary', label: 'Primary Responsibility', count: concerns.filter(c => (c.access_mode || 'primary') === 'primary').length, icon: Building2 },
+          { key: 'transfers', label: 'Incoming Transfer Requests', count: incomingTransfers.length, icon: ArrowRightLeft },
+          { key: 'collaborations', label: 'Department Collaborations', count: incomingCollaborations.length, icon: Users },
+          { key: 'pco_approvals', label: 'Pending PCO Approvals', count: pendingPcoApprovals.length, icon: ShieldCheck },
+        ].map((tab) => {
+          const Icon = tab.icon;
+          const active = roleFilter === tab.key;
+          return (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => {
+                setRoleFilter(tab.key);
+                setCurrentPage(1);
+              }}
+              className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 border transition-colors ${
+                active
+                  ? 'bg-[#1e3a8a] text-white border-[#1e3a8a] shadow-2xs'
+                  : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+              }`}
+            >
+              <Icon size={13} />
+              <span>{tab.label}</span>
+              <span className={`px-1.5 py-0.5 rounded-full text-[10px] ${
+                active ? 'bg-blue-800 text-white' : 'bg-slate-100 text-slate-600'
+              }`}>
+                {tab.count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
 
       <div className="card overflow-hidden">
         {/* Filters Bar */}
@@ -168,6 +230,11 @@ const DeptStaffConcernsList = () => {
                         {concern.title}
                       </div>
                       <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                        {concern.access_mode && COORDINATION_BADGE_MAP[concern.access_mode] && (
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${COORDINATION_BADGE_MAP[concern.access_mode].className}`}>
+                            {COORDINATION_BADGE_MAP[concern.access_mode].label}
+                          </span>
+                        )}
                         {concern.issue_category && (
                           <AiCategoryBadge
                             category={concern.issue_category}

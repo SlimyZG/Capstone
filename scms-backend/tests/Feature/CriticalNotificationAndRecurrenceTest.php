@@ -1224,11 +1224,17 @@ class CriticalNotificationAndRecurrenceTest extends TestCase
             'description' => 'Electric short circuit on register table.',
         ]);
 
-        // Transfer to Registrar
-        $res = $this->actingAs($this->staffNonAcademic)->postJson("/api/dept-staff/concerns/{$concern->concern_id}/transfer", [
-            'target_category' => 'operational_departments',
-            'target_id' => $this->deptRegistrar->id,
-            'notes' => 'Misrouted, belongs to registrar cashier.',
+        // Transfer to Registrar via handshake transfer + acceptance
+        $initRes = $this->actingAs($this->staffNonAcademic)->postJson("/api/dept-staff/concerns/{$concern->concern_id}/transfers", [
+            'to_dept_id' => $this->deptRegistrar->id,
+            'transfer_reason' => 'Misrouted, belongs to registrar cashier.',
+            'handoff_summary' => 'Critical safety issue in registrar office area.',
+        ]);
+        $initRes->assertCreated();
+
+        $transferId = $initRes->json('transfer_request.id');
+        $res = $this->actingAs($registrarStaff)->postJson("/api/dept-staff/concerns/{$concern->concern_id}/transfers/{$transferId}/accept", [
+            'decision_notes' => 'Accepted by Registrar.',
         ]);
         $res->assertStatus(200);
 
