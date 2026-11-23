@@ -63,5 +63,8 @@ class DatabaseSeeder extends Seeder
         foreach ($departments as $deptName) {
             Department::create(['name' => $deptName]);
         }
+
+        // 4. Seed Student Self-Service Assistance Knowledge Base (Pending UCLM Validation / Unpublished by default)
+        $this->call(SelfServiceKnowledgeBaseSeeder::class);
     }
 }

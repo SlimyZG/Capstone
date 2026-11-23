@@ -6,6 +6,7 @@ import {
   Users, 
   FileText, 
   BarChart3, 
+  BookOpen,
   CheckCircle2, 
   Clock, 
   AlertCircle,
@@ -198,6 +199,36 @@ const SaoDashboard = () => {
               className="inline-flex items-center gap-1.5 text-xs font-bold text-blue-600 hover:text-blue-800 transition-colors"
             >
               <span>Explore Analytics</span>
+              <ArrowRight size={13} />
+            </Link>
+          </div>
+        </div>
+
+        {/* Card 5: UCLM Student Guide Management */}
+        <div className="card p-6 flex flex-col justify-between hover:border-blue-300 transition-all">
+          <div className="space-y-3">
+            <div className="w-10 h-10 rounded-lg bg-indigo-50 text-indigo-700 flex items-center justify-center font-bold border border-indigo-100">
+              <BookOpen size={20} />
+            </div>
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <h3 className="text-base font-bold text-slate-900">Student Guide</h3>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+                  Handbook
+                </span>
+              </div>
+              <p className="text-slate-500 text-xs leading-relaxed">
+                Manage digital UCLM Student Manual handbook articles, university procedure validations, and student publication controls.
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-5 pt-3 border-t border-slate-100">
+            <Link
+              to="/sao/self-service"
+              className="inline-flex items-center gap-1.5 text-xs font-bold text-blue-600 hover:text-blue-800 transition-colors"
+            >
+              <span>Manage Student Guide</span>
               <ArrowRight size={13} />
             </Link>
           </div>

@@ -7,6 +7,7 @@ import {
   Users,
   FileText,
   Activity,
+  BookOpen,
   GraduationCap,
   LogOut,
   Menu,
@@ -50,6 +51,12 @@ const SaoLayout = ({ children }) => {
       path: '/sao/oversight',
       icon: FileText,
       matchPrefixes: ['/sao/oversight', '/sao/recurring-incidents']
+    },
+    {
+      label: 'Student Guide',
+      path: '/sao/self-service',
+      icon: BookOpen,
+      matchPrefixes: ['/sao/self-service']
     },
     {
       label: 'Analytics & Sentiment',

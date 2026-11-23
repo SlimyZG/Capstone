@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext';
 import NotificationBell from './NotificationBell';
 import { 
   LayoutDashboard, 
+  HelpCircle,
   PlusSquare, 
   ListTodo, 
   User, 
@@ -25,7 +26,8 @@ const StudentLayout = () => {
   };
 
   const navItems = [
-    { name: 'Dashboard',      path: '/student',          icon: LayoutDashboard },
+    { name: 'Dashboard',      path: '/student',           icon: LayoutDashboard },
+    { name: 'Need Help?',     path: '/student/need-help', icon: HelpCircle },
     { name: 'Submit Concern', path: '/student/submit',    icon: PlusSquare },
     { name: 'My Concerns',    path: '/student/concerns',  icon: ListTodo },
     { name: 'Profile',        path: '/student/profile',   icon: User },
