@@ -186,9 +186,10 @@ class IntelligentClassificationAndSummaryTest extends TestCase
         $this->assertStringContainsString('High priority', $result['priority_explanation']);
     }
 
-    public function test_07_summary_is_concise_under_300_chars_and_identifies_location_and_problem(): void
+    public function test_07_summary_is_complete_within_budget_and_identifies_location_and_problem(): void
     {
         $service = app(LocalSentimentService::class);
+        $maxLen = (int) config('classification.max_summary_length', 800);
 
         $longDescription = 'Good morning dear university administration, I am writing this to formally inform you that inside Lab 3, computer workstation PC 14 is continually crashing whenever students launch compilers. We have been experiencing this for two days and it hampers our programming assignments significantly.';
 
@@ -197,10 +198,13 @@ class IntelligentClassificationAndSummaryTest extends TestCase
             $longDescription
         );
 
-        $this->assertLessThanOrEqual(300, mb_strlen($result['summary']));
+        $this->assertLessThanOrEqual($maxLen, mb_strlen($result['summary']));
         $this->assertGreaterThan(10, mb_strlen($result['summary']));
         $this->assertStringContainsString('Lab 3', $result['summary']);
+        $this->assertStringContainsString('PC 14', $result['summary']);
         $this->assertStringNotContainsString('Good morning dear university administration', $result['summary']);
+        $this->assertStringNotContainsString('...', $result['summary']);
+        $this->assertMatchesRegularExpression('/[.?!]$/', $result['summary']);
     }
 
     public function test_08_recurrence_clustering_separates_different_devices_in_same_room(): void
@@ -269,7 +273,8 @@ class IntelligentClassificationAndSummaryTest extends TestCase
         $this->assertNotNull($concern->classification_explanation);
         $this->assertNotNull($concern->ai_priority_explanation);
         $this->assertNotNull($concern->ai_summary);
-        $this->assertLessThanOrEqual(300, mb_strlen($concern->ai_summary));
+        $this->assertLessThanOrEqual((int) config('classification.max_summary_length', 800), mb_strlen($concern->ai_summary));
+        $this->assertStringNotContainsString('...', $concern->ai_summary);
     }
 
     public function test_10_student_show_exposes_classification_and_summary_but_hides_internal_explanations(): void

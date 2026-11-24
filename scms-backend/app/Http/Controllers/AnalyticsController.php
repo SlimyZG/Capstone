@@ -7,6 +7,7 @@ use App\Models\User;
 use App\Services\AnthropicService;
 use App\Services\GeminiSentimentService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 
 class AnalyticsController extends Controller
@@ -348,16 +349,34 @@ class AnalyticsController extends Controller
         $narrative = null;
         $aiProvider = 'none';
 
-        // 1. Try Gemini first (active verified AI integration)
-        if (!empty(config('services.gemini.api_key'))) {
-            $narrative = $gemini->generateTrendNarrative($stats);
-            if (!empty($narrative)) {
+        // 1. Try Gemini first (only when explicitly enabled and API key is configured; briefly cached to protect quota)
+        $geminiEnabled = filter_var(config('services.gemini.enabled', false), FILTER_VALIDATE_BOOLEAN);
+        $geminiKeyConfigured = trim((string) config('services.gemini.api_key', '')) !== '';
+        if ($geminiEnabled && $geminiKeyConfigured) {
+            $cacheKey = 'analytics_trend_narrative:' . sha1(json_encode([
+                $user->role,
+                $user->academic_unit_id,
+                $user->dept_id,
+                $stats,
+                (string) config('services.gemini.model', 'gemini-3.8-flash'),
+            ]));
+
+            $cachedNarrative = Cache::get($cacheKey);
+            if (is_string($cachedNarrative) && $cachedNarrative !== '') {
+                $narrative = $cachedNarrative;
                 $aiProvider = 'gemini';
+            } else {
+                $narrative = $gemini->generateTrendNarrative($stats);
+                if (!empty($narrative)) {
+                    Cache::put($cacheKey, $narrative, now()->addMinutes(15));
+                    $aiProvider = 'gemini';
+                }
             }
         }
 
         // 2. Fall back to Anthropic if Gemini failed or is unconfigured
-        if (empty($narrative) && !empty(env('ANTHROPIC_API_KEY')) && env('ANTHROPIC_API_KEY') !== 'dummy_key_for_now') {
+        $anthropicKey = trim((string) config('services.anthropic.api_key', ''));
+        if (empty($narrative) && $anthropicKey !== '' && $anthropicKey !== 'dummy_key_for_now') {
             $result = $anthropic->generateTrendNarrative(json_encode($stats));
             if (!empty($result['narrative'])) {
                 $narrative = $result['narrative'];

@@ -74,12 +74,16 @@ class AiRepairPhase1Test extends TestCase
             'non_academic'
         );
 
+        $maxLen = (int) config('classification.max_summary_length', 800);
         $this->assertEquals('critical', $result['priority_suggestion']);
         $this->assertEquals('Non-Academic Concerns', $result['issue_category']);
         $this->assertEquals('Peer Conflict / Harassment', $result['issue_subcategory']);
-        $this->assertLessThanOrEqual(300, mb_strlen($result['summary']));
-        $this->assertStringContainsString('assault', strtolower($result['summary']));
+        $this->assertLessThanOrEqual($maxLen, mb_strlen($result['summary']));
+        $this->assertStringContainsString('punched', strtolower($result['summary']));
+        $this->assertStringContainsString('swollen', strtolower($result['summary']));
+        $this->assertStringContainsString('bleeding', strtolower($result['summary']));
         $this->assertStringNotContainsString('Physical assault by classmate in hallway — A classmate punched me', $result['summary']);
+        $this->assertStringNotContainsString('...', $result['summary']);
     }
 
     /**
@@ -95,10 +99,14 @@ class AiRepairPhase1Test extends TestCase
             'non_academic'
         );
 
+        $maxLen = (int) config('classification.max_summary_length', 800);
         $this->assertEquals('Non-Academic Concerns', $result['issue_category']);
         $this->assertEquals('Student Affairs', $result['issue_subcategory']);
-        $this->assertLessThanOrEqual(300, mb_strlen($result['summary']));
-        $this->assertStringContainsString('ID', $result['summary']);
+        $this->assertLessThanOrEqual($maxLen, mb_strlen($result['summary']));
+        $this->assertStringContainsString('school ID', $result['summary']);
+        $this->assertStringContainsString('canteen', strtolower($result['summary']));
+        $this->assertStringContainsString('replacement', strtolower($result['summary']));
+        $this->assertStringNotContainsString('...', $result['summary']);
 
         // Check department recommendation routes to Security/CSU
         $deptRec = $service->recommendOperationalDepartment(
@@ -123,30 +131,39 @@ class AiRepairPhase1Test extends TestCase
             'academic'
         );
 
+        $maxLen = (int) config('classification.max_summary_length', 800);
         $this->assertEquals('Academic Concerns', $result['issue_category']);
         $this->assertEquals('Assessment and Examination', $result['issue_subcategory']);
         $this->assertEquals('high', $result['priority_suggestion']);
-        $this->assertLessThanOrEqual(300, mb_strlen($result['summary']));
-        $this->assertStringContainsString('assessment', strtolower($result['summary']));
+        $this->assertLessThanOrEqual($maxLen, mb_strlen($result['summary']));
+        $this->assertStringContainsString('Canvas', $result['summary']);
+        $this->assertStringContainsString('midterm quiz', strtolower($result['summary']));
+        $this->assertStringContainsString('4 minutes', $result['summary']);
+        $this->assertStringContainsString('25 questions unanswered', $result['summary']);
+        $this->assertStringNotContainsString('...', $result['summary']);
     }
 
     /**
-     * Task 1: Summary generation produces concise summary without repeating title and within 300 chars.
+     * Task 1: Summary generation produces complete factual sentences within budget without ellipses.
      */
     public function test_summary_generation_handles_short_and_detailed_concerns(): void
     {
         $service = app(LocalSentimentService::class);
+        $maxLen = (int) config('classification.max_summary_length', 800);
 
         // Short concern
         $short = $service->analyzeConcern('Aircon dripping', 'Aircon leaking water.', 'academic');
-        $this->assertLessThanOrEqual(300, mb_strlen($short['summary']));
+        $this->assertLessThanOrEqual($maxLen, mb_strlen($short['summary']));
+        $this->assertStringContainsString('Aircon leaking water.', $short['summary']);
         $this->assertStringNotContainsString('Aircon dripping — Aircon leaking water.', $short['summary']);
 
-        // Long concern
+        // Repetitive long concern deduplicates cleanly without artificial truncation
         $longDesc = str_repeat('The classroom projector lamp is burnt out and flickering during daily lectures. ', 10);
         $long = $service->analyzeConcern('Burnt projector lamp', $longDesc, 'academic');
-        $this->assertLessThanOrEqual(300, mb_strlen($long['summary']));
+        $this->assertLessThanOrEqual($maxLen, mb_strlen($long['summary']));
         $this->assertGreaterThan(10, mb_strlen($long['summary']));
+        $this->assertStringNotContainsString('...', $long['summary']);
+        $this->assertMatchesRegularExpression('/[.?!]$/', $long['summary']);
     }
 
     /**

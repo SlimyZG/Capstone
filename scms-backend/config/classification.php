@@ -119,5 +119,5 @@ return [
     | Summary Options
     |--------------------------------------------------------------------------
     */
-    'max_summary_length' => 300,
+    'max_summary_length' => (int) env('AI_MAX_SUMMARY_LENGTH', 800),
 ];

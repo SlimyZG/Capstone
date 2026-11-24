@@ -409,7 +409,7 @@ const StudentConcernDetails = () => {
         {/* Left Column (Details + Messages) */}
         <div className="lg:col-span-2 space-y-6">
           
-          {/* AI Issue Summary (Capped to 300 chars, clean wrapping without cut-off) */}
+          {/* AI Issue Summary */}
           {concern.ai_summary && (
             <AiSummaryCard summary={concern.ai_summary} metadata={concern.ai_metadata} />
           )}

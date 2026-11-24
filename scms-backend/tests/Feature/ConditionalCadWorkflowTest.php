@@ -597,7 +597,10 @@ class ConditionalCadWorkflowTest extends TestCase
 
     private function fakeGeminiResponse(string $category, string $subcategory): void
     {
-        config(['services.gemini.api_key' => 'test-key']);
+        config([
+            'services.gemini.enabled' => true,
+            'services.gemini.api_key' => 'test-key',
+        ]);
         \Illuminate\Support\Facades\Http::fake([
             'generativelanguage.googleapis.com/*' => \Illuminate\Support\Facades\Http::response([
                 'candidates' => [[

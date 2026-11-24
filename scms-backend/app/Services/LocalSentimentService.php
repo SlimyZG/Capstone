@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Support\SummaryTextHelper;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -372,7 +373,10 @@ class LocalSentimentService
     }
 
     /**
-     * Generate a concise, professional summary up to 300 characters.
+     * Generate a concise, factual 2-3 sentence issue summary within the configured
+     * maximum budget (default 800 characters, preferred target 200-450 characters
+     * for medium/long concerns). Never slices mid-word, never appends "...",
+     * and never invents unverified facts.
      */
     public function generateSummary(
         string $title,
@@ -381,136 +385,1036 @@ class LocalSentimentService
         string $subcategory,
         string $priority
     ): string {
-        $maxLen = (int) config('classification.max_summary_length', 300);
-        $rawCombined = $title . ' ' . $description;
-        $lower = strtolower($rawCombined);
+        $maxLen = (int) config('classification.max_summary_length', 800);
+        $candidates = $this->extractSummaryCandidates($description);
 
-        // 1. Strip formal salutations and pleasantries
-        $cleanedDesc = trim($description);
-        $cleanedDesc = preg_replace('/^(?:(?:good\s+(?:morning|afternoon|day|evening)|greetings|hello|hi)\s*(?:(?:to\s+)?(?:the\s+)?(?:dear\s+)?[\w\s]+)?|dear\s+[\w\s]+|to\s+whom\s+it\s+may\s+concern)\s*[,:\-.]?\s*/i', '', $cleanedDesc);
-        $cleanedDesc = preg_replace('/^(?:i\s+am\s+writing\s+(?:this\s+)?to\s+(?:formally\s+)?(?:inform|report|notify|request|bring\s+to\s+your\s+attention)\s+(?:you\s+)?(?:that\s+)?|i\s+would\s+like\s+to\s+report\s+(?:that\s+)?|i\s+am\s+reporting\s+(?:that\s+)?|please\s+be\s+informed\s+that\s+)\s*/i', '', $cleanedDesc);
-        $cleanedDesc = trim($cleanedDesc);
+        if (empty($candidates)) {
+            $fallback = trim($description) !== '' ? trim($description) : trim($title);
+            return SummaryTextHelper::condenseToSentenceBudget($fallback, $maxLen);
+        }
 
-        // 2. Extract Location
-        $location = '';
-        if (preg_match('/\b(?:computer laboratory\s+room\s*\d+[a-z]?|laboratory\s+room\s*\d+[a-z]?|room\s*\d+[a-z]?|rm\s*\d+[a-z]?|lab\s*\d+[a-z]?|bldg\s*\w+|building\s*\w+|ccs|library|cashier|registrar|canteen|hallway|corridor)\b/i', $rawCombined, $lm)) {
-            $location = trim($lm[0]);
-            if (preg_match('/room\s*(\d+[a-z]?)/i', $location, $rm)) {
-                $location = "Room " . strtoupper($rm[1]);
-            } elseif (preg_match('/lab\s*(\d+[a-z]?)/i', $location, $lbm)) {
-                $location = "Lab " . strtoupper($lbm[1]);
+        // Tier 1: Short, already clear concerns receive modest deterministic clause condensation without forced truncation.
+        $joinedAll = implode(' ', array_column($candidates, 'text'));
+        $sourceLen = mb_strlen($joinedAll);
+        if ($sourceLen <= min(240, $maxLen) || (count($candidates) <= 2 && $sourceLen <= min(280, $maxLen))) {
+            $condensedShort = SummaryTextHelper::condenseShortFirstPersonClauses($joinedAll);
+            return SummaryTextHelper::condenseToSentenceBudget($condensedShort, $maxLen);
+        }
+
+        // Tier 2: Controlled fact-verified synthesis for structured administrative/academic workflows.
+        $synthesized = $this->attemptStructuredSynthesis($description, $sourceLen, $maxLen);
+        if ($synthesized !== null) {
+            return $synthesized;
+        }
+
+        // Tier 3: Concise 2-3 sentence extractive fallback (never pads greedily to 800 chars).
+        $titleKeywords = $this->extractTitleKeywords($title);
+        $totalCandidates = count($candidates);
+
+        foreach ($candidates as $idx => &$cand) {
+            $compressed = SummaryTextHelper::compressRedundantPhrasing($cand['text']);
+            if ($compressed !== '') {
+                $cand['text'] = $compressed;
+                $cand['len'] = mb_strlen($compressed);
+            }
+            $cand['scores'] = $this->scoreSummaryCandidate($cand['text'], $idx, $totalCandidates, $titleKeywords);
+        }
+        unset($cand);
+
+        $selectedIndices = $this->selectSummarySentenceIndices($candidates, $maxLen, $sourceLen);
+
+        sort($selectedIndices);
+        $orderedSentences = array_map(fn (int $i): string => $candidates[$i]['text'], $selectedIndices);
+
+        return SummaryTextHelper::condenseToSentenceBudget(implode(' ', $orderedSentences), $maxLen);
+    }
+
+    /**
+     * Attempt controlled deterministic synthesis ONLY when all facts used in a sentence
+     * template are directly verified in the source description. Returns null to fall back
+     * safely whenever reliable fact extraction is incomplete or longer than extractive input.
+     */
+    private function attemptStructuredSynthesis(string $description, int $sourceLen, int $maxLen): ?string
+    {
+        $synthesizers = [
+            fn (string $text): ?string => $this->synthesizeGradeDiscrepancy($text),
+            fn (string $text): ?string => $this->synthesizePaymentReceiptDelay($text),
+            fn (string $text): ?string => $this->synthesizeFacilityLabIssue($text),
+            fn (string $text): ?string => $this->synthesizeClassroomEquipmentIssue($text),
+            fn (string $text): ?string => $this->synthesizeGuidanceCrisis($text),
+        ];
+
+        foreach ($synthesizers as $synthesizer) {
+            $raw = $synthesizer($description);
+            if ($raw === null || trim($raw) === '') {
+                continue;
+            }
+
+            $sentences = SummaryTextHelper::splitSentences($raw);
+            if (empty($sentences) || SummaryTextHelper::hasDuplicateSentence($sentences)) {
+                continue;
+            }
+
+            $bounded = SummaryTextHelper::condenseToSentenceBudget($raw, $maxLen);
+            if ($bounded !== '' && mb_strlen($bounded) < $sourceLen) {
+                return $bounded;
             }
         }
 
-        // 3. Extract Equipment / Subject
-        $equipment = '';
-        if (preg_match('/\b(?:workstation\s+pc[-\s]*\d+|pc[-\s]*\d+|computer[-\s]*\d+|projector|printer|monitor|wifi|internet|network|lms|portal|canvas|aircon|air conditioning|ac|school id|student id|id card|quiz|exam|midterm|finals)\b/i', $rawCombined, $em)) {
-            $equipment = trim($em[0]);
+        return null;
+    }
+
+    private function synthesizeClassroomEquipmentIssue(string $text): ?string
+    {
+        if (!preg_match('/\b(projector|smart\s+tv|whiteboard|microphone|speaker\s+system)\b/iu', $text, $eqMatch)) {
+            return null;
+        }
+        if (!preg_match('/\b(Room\s+\d+[A-Z]?|Lab(?:oratory)?\s+\d+)\b/iu', $text, $roomMatch)) {
+            return null;
+        }
+        if (!preg_match('/\b(repeatedly\s+shuts\s+down|shuts\s+down|shutting\s+down|stopped\s+working|not\s+turning\s+on|flickering)\b/iu', $text, $failMatch)) {
+            return null;
         }
 
-        // Pattern A: Physical assault / Violence / Bullying
-        if (preg_match('/\b(?:punching|punched|punches|punch|assault|physical assault|violence|beaten|swollen|bleeding|attacked|attack)\b/i', $lower)) {
-            $actor = preg_match('/\b(?:classmate|schoolmate|student|peer|fellow student)\b/i', $lower, $am) ? "by {$am[0]}" : "";
-            $injuries = [];
-            if (str_contains($lower, 'swollen')) $injuries[] = 'swelling';
-            if (str_contains($lower, 'bleeding')) $injuries[] = 'bleeding';
-            if (str_contains($lower, 'face') || str_contains($lower, 'facial')) $injuries[] = 'facial injury';
-            $injuryText = !empty($injuries) ? ' resulting in ' . implode(' and ', $injuries) : '';
-            $locText = $location ? " in {$location}" : "";
-            return "Physical assault / bullying incident{$locText}: Student reports being attacked/punched {$actor}{$injuryText}; immediate intervention and support requested.";
+        $equipment = strtolower(trim($eqMatch[1]));
+        $room = trim((string) preg_replace('/\s+/u', ' ', $roomMatch[1]));
+        $failure = strtolower(trim((string) preg_replace('/\s+/u', ' ', $failMatch[1])));
+
+        $datePattern = '(?:(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:,\s*20\d{2})?)';
+
+        $incidentDate = null;
+        if (preg_match('/\bon\s+(' . $datePattern . ')/iu', $text, $dm)) {
+            $incidentDate = SummaryTextHelper::normalizeConciseDate($dm[1]);
         }
 
-        // Pattern B: Missing / Lost Credential or Property
-        if (preg_match('/\b(?:missing|lost|misplaced|stolen|dropped)\b/i', $lower) && preg_match('/\b(?:school id|student id|id card|id|wallet|item)\b/i', $lower)) {
-            $item = preg_match('/\b(?:school id|student id|id card)\b/i', $lower, $im) ? strtoupper($im[0]) : "ID card";
-            return "Lost/Missing Credential: Student reports missing {$item} and requests assistance with retrieval or replacement.";
+        $hasPresentationInterruption = (bool) preg_match('/\binterrupt(?:ing|ed)\s+(?:the\s+|our\s+)?presentation\b/iu', $text);
+        $studentCount = null;
+        if (preg_match('/\b(\d+)\s+students\b/iu', $text, $sm)) {
+            $studentCount = $sm[1] . ' students';
         }
 
-        // Pattern C: LMS / Online Quiz / Exam Disruption
-        if (preg_match('/\b(?:lms|quiz|exam|examination|test|prelim|midterm|finals)\b/i', $lower) && preg_match('/\b(?:auto-submitted|auto submitted|submitted|timer|unanswered|crashed|locked out|freeze)\b/i', $lower)) {
-            $details = [];
-            if (preg_match('/\b(?:after\s+\w+\s+minutes?|\d+\s+minutes?)\b/i', $cleanedDesc, $tm)) {
-                $details[] = $tm[0];
+        $s1 = "The student reports that the {$equipment} in {$room} {$failure}";
+        if ($incidentDate !== null) {
+            $s1 .= " on {$incidentDate}";
+        }
+        $tailParts = [];
+        if ($hasPresentationInterruption) {
+            $tailParts[] = 'interrupting a presentation';
+        }
+        if ($studentCount !== null) {
+            $tailParts[] = "affecting around {$studentCount}";
+        }
+        if (!empty($tailParts)) {
+            $s1 .= ', ' . implode(' and ', $tailParts);
+        }
+        $s1 .= '.';
+
+        $hasInspect = (bool) preg_match('/\binspect(?:ed|ion)?\b/iu', $text);
+        $hasRepair = (bool) preg_match('/\brepair(?:ed|s)?\b/iu', $text);
+        if (!$hasInspect && !$hasRepair) {
+            return null;
+        }
+
+        $reqAction = ($hasInspect && $hasRepair)
+            ? 'an inspection and repair'
+            : ($hasInspect ? 'an inspection' : 'repairs');
+
+        $nextDate = null;
+        if (preg_match('/\b(?:scheduled\s+presentation|next\s+class|examination)\s+on\s+(' . $datePattern . ')/iu', $text, $nm)) {
+            $nextDate = SummaryTextHelper::normalizeConciseDate($nm[1]);
+        } elseif (preg_match('/\bbefore\s+(' . $datePattern . ')/iu', $text, $bm)) {
+            $nextDate = SummaryTextHelper::normalizeConciseDate($bm[1]);
+        }
+
+        $s2 = "They request {$reqAction}";
+        if ($nextDate !== null) {
+            $hasNextPresentation = (bool) preg_match('/\bscheduled\s+presentation\s+on\b/iu', $text);
+            $s2 .= $hasNextPresentation
+                ? " before the next scheduled presentation on {$nextDate}"
+                : " before {$nextDate}";
+        }
+        $s2 .= '.';
+
+        return "{$s1} {$s2}";
+    }
+
+    private function synthesizeGuidanceCrisis(string $text): ?string
+    {
+        if (!preg_match('/\b(?:family\s+(?:and\s+personal\s+)?crisis|personal\s+crisis|family\s+emergency|emotional\s+distress|mental\s+health\s+crisis)\b/iu', $text)) {
+            return null;
+        }
+        if (!preg_match('/\b(?:guidance\s+center|counseling|counselor|consultation)\b/iu', $text)) {
+            return null;
+        }
+
+        $crisisLabel = 'a personal crisis';
+        if (preg_match('/\bfamily\s+and\s+personal\s+crisis\b/iu', $text)) {
+            $crisisLabel = 'a family and personal crisis';
+        } elseif (preg_match('/\bfamily\s+(?:crisis|emergency)\b/iu', $text)) {
+            $crisisLabel = 'a family emergency';
+        } elseif (preg_match('/\b(?:emotional\s+distress|mental\s+health\s+crisis)\b/iu', $text)) {
+            $crisisLabel = 'emotional distress';
+        }
+
+        $impacts = [];
+        if (preg_match('/\battendance\b/iu', $text)) {
+            $impacts[] = 'attendance';
+        }
+        if (preg_match('/\b(?:exam\s+performance|academic\s+performance)\b/iu', $text)) {
+            $impacts[] = 'academic performance';
+        }
+
+        $s1 = "The student reports {$crisisLabel}";
+        if (!empty($impacts)) {
+            $impactStr = count($impacts) === 2 ? "{$impacts[0]} and {$impacts[1]}" : $impacts[0];
+            $s1 .= " that is affecting {$impactStr}";
+        }
+        $s1 .= '.';
+
+        $isUrgent = (bool) preg_match('/\b(?:today|urgent\w*|immediately)\b/iu', $text);
+        $hasEndorsement = (bool) preg_match('/\bendorsement\b/iu', $text);
+        $hasGuidanceCenter = (bool) preg_match('/\bguidance\s+center\b/iu', $text);
+        $hasAcademicRisk = (bool) preg_match('/\b(?:academic\s+standing|subject\s+retention)\b/iu', $text);
+        $hasGradingCutoff = (bool) preg_match('/\b(?:grading\s+cutoff|grading\s+deadline)\b/iu', $text);
+
+        $reqTarget = $hasEndorsement ? 'counseling assistance and an endorsement' : 'counseling assistance';
+        $s2 = 'They ' . ($isUrgent ? 'urgently request ' : 'request ') . $reqTarget;
+        if ($hasGuidanceCenter) {
+            $s2 .= ' from the Guidance Center';
+        }
+        if ($hasAcademicRisk) {
+            $s2 .= ' to address potential academic consequences';
+        }
+        if ($hasGradingCutoff) {
+            $s2 .= ' before the grading deadline';
+        }
+        $s2 .= '.';
+
+        return "{$s1} {$s2}";
+    }
+
+    private function synthesizeGradeDiscrepancy(string $text): ?string
+    {
+        if (!preg_match('/\b(?:inc\b|incomplete|incorrect\s+(?:final\s+)?grade|grade\s+(?:encoding\s+)?discrepancy|wrong\s+(?:final\s+)?grade)\b/iu', $text)) {
+            return null;
+        }
+
+        $datePattern = '(?:(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:,\s*20\d{2})?)';
+
+        $course = null;
+        if (preg_match('/\b([A-Z]{2,5}-\d{3}(?:\s+[A-Z][A-Za-z]+){0,3})(?=\s+(?:during|under|final|grade|class|first|second|semester|for|on|in)\b|[,.?!]|$)/u', $text, $m)) {
+            $course = trim($m[1]);
+        }
+
+        $expectedGrade = null;
+        $earnedDate = null;
+        if (preg_match('/(?:final\s+grade\s+of|score\s+(?:totaled|of)|earned|received)\s+(\d{1,3}(?:\.\d+)?%)(?:[^.\n]{0,40}?\bon\s+(' . $datePattern . '))?/iu', $text, $m)) {
+            $expectedGrade = $m[1];
+            if (!empty($m[2])) {
+                $earnedDate = SummaryTextHelper::normalizeConciseDate($m[2]);
             }
-            if (preg_match('/\b\d+\s+questions?\s+unanswered\b/i', $cleanedDesc, $qm)) {
-                $details[] = $qm[0];
-            }
-            $detailStr = !empty($details) ? ' (' . implode(', ', $details) . ')' : '';
-            return "Academic assessment disruption: LMS prematurely submitted quiz/exam{$detailStr}, affecting student assessment completion.";
+        } elseif (preg_match('/\b(\d{1,3}(?:\.\d+)?%)\b/u', $text, $m)) {
+            $expectedGrade = $m[1];
+        }
+        if ($expectedGrade !== null && $earnedDate === null && preg_match('/\bon\s+(' . $datePattern . ')(?:(?!\bon\s+' . $datePattern . ')[^.\n]){0,140}?' . preg_quote($expectedGrade, '/') . '/iu', $text, $em)) {
+            $earnedDate = SummaryTextHelper::normalizeConciseDate($em[1]);
         }
 
-        // Pattern D: Equipment / Facility / Laboratory Disruption
-        if ($location || $equipment) {
-            $sentences = preg_split('/(?<=[.?!])\s+/', $cleanedDesc);
-            $coreProblem = '';
+        $hasInc = (bool) preg_match('/\bINC\b/u', $text);
+        $portalLabel = $hasInc ? 'incorrect INC grade' : 'incorrect grade';
+        $postedDate = null;
+        if (preg_match('/(?:on\s+(' . $datePattern . ')[^.\n]{0,45}?(?:portal|grades?\s+were\s+released|displayed\s+INC|showed\s+INC|posted)|(?:displayed|showed|posted)[^.\n]{0,30}?\bINC\b[^.\n]{0,30}?\bon\s+(' . $datePattern . '))/iu', $text, $m)) {
+            $rawPosted = !empty($m[1]) ? $m[1] : ($m[2] ?? '');
+            if ($rawPosted !== '') {
+                $postedDate = SummaryTextHelper::normalizeConciseDate($rawPosted);
+            }
+        }
 
-            foreach ($sentences as $s) {
-                $sTrim = trim($s);
-                if (preg_match('/^(?:i am a|i am currently|we are currently)\b/i', $sTrim)) {
+        $ackClause = null;
+        if (preg_match('/(?:instructor|professor)\b[^.\n]{0,80}?\b(?:acknowledged|confirmed|admitted)\b[^.\n]{0,80}?\b(?:skipped|omitted|encoding)\b/iu', $text)) {
+            $ackDate = null;
+            if (preg_match('/\bon\s+(' . $datePattern . ')(?:(?!\bon\s+' . $datePattern . ')[^.\n]){0,60}?\b(?:acknowledged|confirmed|admitted)\b/iu', $text, $dm)) {
+                $ackDate = SummaryTextHelper::normalizeConciseDate($dm[1]);
+            }
+            $isHedged = (bool) preg_match('/\b(?:may\s+have|might\s+have|possibly|possible|could\s+have|suspected)\b/iu', $text);
+            $omissionPhrase = $isHedged ? 'a possible encoding omission' : 'an encoding omission';
+            $ackClause = ($ackDate ? "On {$ackDate}, the" : 'The') . " instructor acknowledged {$omissionPhrase}";
+        }
+
+        $scholarshipImpact = null;
+        if (preg_match('/\bscholarship\b/iu', $text)) {
+            $deadlineDate = null;
+            if (preg_match('/(?:deadline|forfeited|cleared)[^.\n]{0,35}?\b(?:is|by|on)\s+(' . $datePattern . ')/iu', $text, $sm)) {
+                $deadlineDate = SummaryTextHelper::normalizeConciseDate($sm[1]);
+            }
+            $renewalPhrase = preg_match('/\brenewal\b/iu', $text) ? 'scholarship renewal' : 'scholarship eligibility';
+            $scholarshipImpact = $deadlineDate
+                ? "may affect {$renewalPhrase} before the {$deadlineDate} deadline"
+                : "may affect {$renewalPhrase}";
+        }
+
+        $hasFormalReview = (bool) preg_match('/\b(?:formal\s+review|review(?:ed)?\s+(?:of\s+)?(?:the\s+)?grade\s+records?|verify\s+my\s+class\s+record)\b/iu', $text);
+        $hasChangeOfGrade = (bool) preg_match('/\bChange\s+of\s+Grade\b/iu', $text);
+        $hasTempCert = (bool) preg_match('/\btemporary\s+certification\b/iu', $text);
+        $requestDeadline = null;
+        if (preg_match('/(?:corrected|reviewed|change\s+of\s+grade|documents)[^.\n]{0,35}?\b(?:before|by)\s+(' . $datePattern . ')/iu', $text, $rm)) {
+            $requestDeadline = SummaryTextHelper::normalizeConciseDate($rm[1]);
+        }
+
+        $factSignals = ($course !== null ? 1 : 0)
+            + ($expectedGrade !== null ? 1 : 0)
+            + ($hasInc ? 1 : 0)
+            + ($ackClause !== null ? 1 : 0)
+            + ($scholarshipImpact !== null ? 1 : 0)
+            + ($hasChangeOfGrade ? 1 : 0);
+        if ($factSignals < 3) {
+            return null;
+        }
+
+        // Sentence 1: Core grade discrepancy
+        $s1 = "The student reports an {$portalLabel}";
+        if ($postedDate !== null) {
+            $s1 .= " posted on {$postedDate}";
+        }
+        if ($course !== null) {
+            $s1 .= " for {$course}";
+        }
+        if ($expectedGrade !== null) {
+            $s1 .= " despite earning {$expectedGrade}";
+            if ($earnedDate !== null) {
+                $s1 .= " on {$earnedDate}";
+            }
+        }
+        $s1 .= '.';
+
+        $sentences = [$s1];
+
+        // Sentence 2: Instructor follow-up and/or scholarship deadline impact
+        if ($ackClause !== null && $scholarshipImpact !== null) {
+            $sentences[] = "{$ackClause}, which {$scholarshipImpact}.";
+        } elseif ($ackClause !== null) {
+            $sentences[] = "{$ackClause}.";
+        } elseif ($scholarshipImpact !== null) {
+            $sentences[] = 'The unresolved grade ' . $scholarshipImpact . '.';
+        }
+
+        // Sentence 3: Requested actions
+        $actions = [];
+        if ($hasFormalReview) {
+            $actions[] = 'a formal review';
+        }
+        if ($hasChangeOfGrade) {
+            $actions[] = 'a Change of Grade process';
+        }
+        if ($hasTempCert) {
+            $actions[] = 'temporary certification';
+        }
+        if (empty($actions) && preg_match('/\b(?:corrected|correction|update|clear\w*)\b/iu', $text)) {
+            $actions[] = 'grade correction';
+        }
+
+        if (!empty($actions)) {
+            $actionText = count($actions) === 1
+                ? $actions[0]
+                : (count($actions) === 2
+                    ? "{$actions[0]} and {$actions[1]}"
+                    : "{$actions[0]}, {$actions[1]}, and {$actions[2]}");
+            $s3 = "The student requests {$actionText}";
+            if ($requestDeadline !== null) {
+                $s3 .= " before {$requestDeadline}";
+            }
+            $s3 .= '.';
+            $sentences[] = $s3;
+        }
+
+        return implode(' ', $sentences);
+    }
+
+    private function synthesizePaymentReceiptDelay(string $text): ?string
+    {
+        if (!preg_match('/\b(?:paid|payment|tuition)\b/iu', $text)) {
+            return null;
+        }
+        if (!preg_match('/\b(?:official\s+receipt|receipt|ledger\s+still\s+shows\s+unpaid|shows\s+unpaid)\b/iu', $text)) {
+            return null;
+        }
+
+        $datePattern = '(?:(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:,\s*20\d{2})?)';
+
+        $amount = null;
+        if (preg_match('/\b(\d{1,3}(?:,\d{3})*\s*(?:pesos|php))\b/iu', $text, $m)) {
+            $amount = preg_replace('/\s+/u', ' ', trim($m[1]));
+        }
+
+        $location = null;
+        if (preg_match('/\b(Cashier(?:\s+Window\s+\d+)?)\b/iu', $text, $m)) {
+            $location = trim($m[1]);
+        }
+
+        $paidDate = null;
+        if (preg_match('/\bon\s+(' . $datePattern . ')/iu', $text, $m)) {
+            $paidDate = SummaryTextHelper::normalizeConciseDate($m[1]);
+        }
+
+        if ($amount === null && $location === null) {
+            return null;
+        }
+
+        $hasLedgerUnpaid = (bool) preg_match('/\bledger\s+still\s+shows\s+unpaid\b/iu', $text);
+        $hasNoReceipt = (bool) preg_match('/\b(?:not\s+received\s+(?:my\s+|the\s+)?official\s+receipt|delayed\s+official\s+receipt|still\s+have\s+not\s+received)\b/iu', $text);
+        if (!$hasLedgerUnpaid && !$hasNoReceipt) {
+            return null;
+        }
+
+        $s1 = 'The student paid ' . ($amount ?? 'tuition');
+        if ($location !== null) {
+            $s1 .= " at {$location}";
+        }
+        if ($paidDate !== null) {
+            $s1 .= " on {$paidDate}";
+        }
+        if ($hasNoReceipt && $hasLedgerUnpaid) {
+            $s1 .= ', yet the ledger remains unpaid and no official receipt has been issued.';
+        } elseif ($hasLedgerUnpaid) {
+            $s1 .= ', yet the ledger still shows unpaid.';
+        } else {
+            $s1 .= ' but has not received the official receipt.';
+        }
+
+        $sentences = [$s1];
+
+        $examDeadlineDay = null;
+        if (preg_match('/\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday)\b/iu', $text, $m)) {
+            $examDeadlineDay = ucfirst(strtolower($m[1]));
+        }
+        $hasExamPermit = (bool) preg_match('/\b(?:examination\s+permit|exam\s+permit)\b/iu', $text);
+        $isExplicitlyBlocking = (bool) preg_match('/\bblocking\b/iu', $text);
+
+        $impactClause = null;
+        if ($hasExamPermit) {
+            $permitLabel = $examDeadlineDay ? "{$examDeadlineDay} examination permit" : 'examination permit';
+            if ($isExplicitlyBlocking) {
+                $impactClause = "This delay is blocking the {$permitLabel}";
+            } else {
+                $impactClause = "Without it, the student may miss the {$permitLabel} deadline";
+            }
+        }
+
+        $hasVerify = (bool) preg_match('/\bverif(?:y|ying|ication)\b/iu', $text);
+        $hasIssueReceipt = (bool) preg_match('/\b(?:issu(?:e|ing)\s+(?:my\s+|the\s+)?official\s+receipt|official\s+receipt)\b/iu', $text);
+
+        $requestParts = [];
+        if ($hasVerify) {
+            $requestParts[] = 'verifying the payment';
+        }
+        if ($hasIssueReceipt) {
+            $requestParts[] = 'issuing the official receipt';
+        }
+
+        $requestClause = null;
+        if (!empty($requestParts)) {
+            $joinedReq = count($requestParts) === 2
+                ? "{$requestParts[0]} and {$requestParts[1]}"
+                : $requestParts[0];
+            $requestClause = "requests assistance {$joinedReq}";
+            if ($examDeadlineDay !== null && preg_match('/\bbefore\s+' . preg_quote($examDeadlineDay, '/') . '\b/iu', $text)) {
+                $requestClause .= " before {$examDeadlineDay}";
+            }
+        }
+
+        if ($impactClause !== null && $requestClause !== null) {
+            $sentences[] = "{$impactClause} and {$requestClause}.";
+        } elseif ($impactClause !== null) {
+            $sentences[] = "{$impactClause}.";
+        } elseif ($requestClause !== null) {
+            $sentences[] = 'The student ' . $requestClause . '.';
+        }
+
+        return implode(' ', $sentences);
+    }
+
+    private function synthesizeFacilityLabIssue(string $text): ?string
+    {
+        if (mb_strlen($text) <= 320) {
+            return null;
+        }
+        if (!preg_match('/\b(?:air[-\s]?conditioning|aircon|cooling)\b/iu', $text) || !preg_match('/\b(?:leak(?:ing|age)?|water)\b/iu', $text)) {
+            return null;
+        }
+
+        $room = null;
+        if (preg_match('/\b((?:Computer\s+Laboratory\s+|Science\s+Lab\s+|Lab\s+)?Room\s+\d+[A-Z]?)\b/iu', $text, $m)) {
+            $room = trim((string) preg_replace('/\s+/u', ' ', $m[1]));
+        } elseif (preg_match('/\b(Lab(?:oratory)?\s+\d+)\b/iu', $text, $m)) {
+            $room = trim($m[1]);
+        }
+        if ($room === null) {
+            return null;
+        }
+
+        $datePattern = '(?:(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:,\s*20\d{2})?)';
+
+        $startDate = null;
+        if (preg_match('/\bsince\s+(?:Monday,\s+|Tuesday,\s+|Wednesday,\s+|Thursday,\s+|Friday,\s+)?(' . $datePattern . ')/iu', $text, $m)) {
+            $startDate = SummaryTextHelper::normalizeConciseDate($m[1]);
+        }
+
+        $hasCoolingFailure = (bool) preg_match('/\b(?:cooling\s+system\s+is\s+not\s+functioning|cooling\s+stopped|not\s+functioning|hot)\b/iu', $text);
+        $issuePhrase = $hasCoolingFailure ? 'an air-conditioning water leak and cooling failure' : 'an air-conditioning water leak';
+        $verb = $hasCoolingFailure ? 'have' : 'has';
+
+        $wsRange = null;
+        if (preg_match('/\b(PC-\d+\s+(?:through|to)\s+PC-\d+)\b/iu', $text, $m)) {
+            $wsRange = (string) preg_replace_callback(
+                '/\b(pc)-(\d+)\b|\b(through|to)\b/iu',
+                fn (array $part): string => !empty($part[1]) ? ('PC-' . $part[2]) : strtolower($part[0]),
+                trim((string) preg_replace('/\s+/u', ' ', $m[1]))
+            );
+        }
+        $spreadDate = null;
+        if ($wsRange !== null && preg_match('/\bon\s+(' . $datePattern . ')[^.\n]{0,65}?' . preg_quote($wsRange, '/') . '/iu', $text, $m)) {
+            $spreadDate = SummaryTextHelper::normalizeConciseDate($m[1]);
+        }
+
+        $s1 = $startDate ? "Since {$startDate}, {$issuePhrase} in {$room}" : "An {$issuePhrase} in {$room}";
+        if ($wsRange !== null) {
+            $s1 .= " {$verb} spread water near {$wsRange}";
+            if ($spreadDate !== null) {
+                $s1 .= " as of {$spreadDate}";
+            }
+        }
+        $s1 .= '.';
+
+        $sentences = [$s1];
+
+        // Sentence 2: Verified hazards, unplugged workstations, student headcount, exam impact
+        $hazardDate = null;
+        if (preg_match('/\b(?:by|on)\s+(' . $datePattern . ')[^.\n]{0,75}?\b(?:slip\w*|electrical|unplugged)\b/iu', $text, $m)) {
+            $hazardDate = SummaryTextHelper::normalizeConciseDate($m[1]);
+        }
+
+        $hazardItems = [];
+        if (preg_match('/\bslippery\b/iu', $text)) {
+            $hazardItems[] = 'slippery floors';
+        } elseif (preg_match('/\bslipped\b/iu', $text)) {
+            $hazardItems[] = 'slip incidents';
+        }
+        if (preg_match('/\b(?:possible|concerns\s+about(?:\s+possible)?)\s+electrical\s+hazard/iu', $text)) {
+            $hazardItems[] = 'possible electrical hazards';
+        } elseif (preg_match('/\belectrical\s+(?:short-circuit\s+)?hazard/iu', $text)) {
+            $hazardItems[] = 'electrical hazards';
+        }
+
+        $unpluggedAction = null;
+        $unpluggedSentence = null;
+        if (preg_match('/\b(four|\d+)\s+workstations\b[^.\n]{0,35}?\bunplugged\b/iu', $text, $m)) {
+            $countWord = strtolower($m[1]);
+            $unpluggedAction = "unplugging {$countWord} workstations";
+            $unpluggedSentence = "{$countWord} workstations were unplugged";
+        }
+
+        $studentCount = null;
+        if (preg_match('/\b(\d+)(?:\s+students|\s*-student)\b/iu', $text, $m)) {
+            $studentCount = $m[1] . ' students';
+        }
+
+        $examDate = null;
+        if (preg_match('/(?:practical\s+)?exam(?:ination)?\s+(?:is\s+)?on\s+(' . $datePattern . ')/iu', $text, $m)) {
+            $examDate = SummaryTextHelper::normalizeConciseDate($m[1]);
+        }
+
+        $s2Parts = [];
+        if (!empty($hazardItems)) {
+            $hazardText = count($hazardItems) === 2
+                ? "{$hazardItems[0]} and {$hazardItems[1]}"
+                : $hazardItems[0];
+            $prefix = $hazardDate ? "By {$hazardDate}, " : '';
+            if ($unpluggedAction !== null) {
+                $s2Parts[] = "{$prefix}{$hazardText} led to {$unpluggedAction}";
+            } else {
+                $s2Parts[] = "{$prefix}{$hazardText} were reported";
+            }
+        } elseif ($unpluggedSentence !== null) {
+            $prefix = $hazardDate ? "By {$hazardDate}, " : '';
+            $s2Parts[] = "{$prefix}{$unpluggedSentence}";
+        }
+
+        $impactTail = null;
+        if ($studentCount !== null && $examDate !== null) {
+            $impactTail = "affecting around {$studentCount} ahead of a {$examDate} examination";
+        } elseif ($studentCount !== null) {
+            $impactTail = "affecting {$studentCount}";
+        } elseif ($examDate !== null) {
+            $impactTail = "ahead of a {$examDate} examination";
+        }
+
+        if (!empty($s2Parts) && $impactTail !== null) {
+            $sentences[] = $s2Parts[0] . ', ' . $impactTail . '.';
+        } elseif (!empty($s2Parts)) {
+            $sentences[] = ucfirst($s2Parts[0]) . '.';
+        } elseif ($impactTail !== null) {
+            $sentences[] = 'The issue is ' . $impactTail . '.';
+        }
+
+        // Sentence 3: Verified requested actions
+        $reqActions = [];
+        if (preg_match('/\binspection\s+of\s+the\s+air-conditioning|\bair-conditioning\s+inspection\b/iu', $text)) {
+            $reqActions[] = 'an air-conditioning inspection';
+        } elseif (preg_match('/\binspect\b/iu', $text) && !preg_match('/\bdrainage\s+line\b/iu', $text)) {
+            $reqActions[] = 'inspection';
+        }
+        if (preg_match('/\bdrainage\s+line\b/iu', $text)) {
+            $reqActions[] = 'drainage repair';
+        }
+        if (preg_match('/\belectrical\s+safety\s+assessment\b/iu', $text)) {
+            $reqActions[] = 'electrical safety assessment';
+        } elseif (preg_match('/\bcertify\s+electrical\s+safety\b/iu', $text)) {
+            $reqActions[] = 'electrical safety certification';
+        }
+        if (preg_match('/\brepairs\b/iu', $text)) {
+            $reqActions[] = 'repairs';
+        } elseif (preg_match('/\brestore\s+cooling\b/iu', $text)) {
+            $reqActions[] = 'cooling restoration';
+        }
+
+        if (!empty($reqActions)) {
+            if (count($reqActions) === 1) {
+                $reqStr = $reqActions[0];
+            } elseif (count($reqActions) === 2) {
+                $reqStr = "{$reqActions[0]} and {$reqActions[1]}";
+            } else {
+                $last = array_pop($reqActions);
+                $reqStr = implode(', ', $reqActions) . ", and {$last}";
+            }
+
+            $reqDeadline = null;
+            if (preg_match('/\bbefore\s+(?:our|the)\s+(?:practical\s+examination\s+on\s+)?(' . $datePattern . ')/iu', $text, $m)) {
+                $reqDeadline = SummaryTextHelper::normalizeConciseDate($m[1]);
+            } elseif (preg_match('/\bbefore\s+the\s+(' . $datePattern . ')\s+examination/iu', $text, $m)) {
+                $reqDeadline = SummaryTextHelper::normalizeConciseDate($m[1]);
+            }
+
+            $s3 = "The student requests {$reqStr}";
+            if ($reqDeadline !== null) {
+                $s3 .= " before {$reqDeadline}";
+            }
+            $s3 .= '.';
+            $sentences[] = $s3;
+        }
+
+        return count($sentences) >= 2 ? implode(' ', $sentences) : null;
+    }
+
+    /**
+     * Parse the description paragraph-by-paragraph into deduplicated, complete sentences,
+     * removing pure salutations, sign-offs, and grammar-safe polite lead-ins.
+     *
+     * @return list<array{paragraph: int, index: int, text: string, len: int}>
+     */
+    private function extractSummaryCandidates(string $description): array
+    {
+        $paragraphs = preg_split('/\R+/u', trim($description)) ?: [];
+        $candidates = [];
+        $sentenceIndex = 0;
+
+        foreach ($paragraphs as $pIdx => $paragraph) {
+            $line = trim($paragraph);
+            if ($line === '') {
+                continue;
+            }
+
+            if ($this->isPureSalutationOrSignoffLine($line)) {
+                continue;
+            }
+
+            foreach (SummaryTextHelper::splitSentences($line) as $rawSentence) {
+                $cleaned = $this->cleanSentenceBoilerplate($rawSentence);
+                if ($cleaned === '' || $this->isPureSalutationOrSignoffLine($cleaned) || $this->isPureIntroductoryFiller($cleaned)) {
                     continue;
                 }
-                if (preg_match('/\b(?:crashing|crashes|shutdown|power failure|burning|smoke|not working|broken|flickering|sparking|leak|lukewarm|failed|error|offline)\b/i', $sTrim)) {
-                    $coreProblem = $sTrim;
+
+                $formatted = SummaryTextHelper::ensureTerminalPunctuation($cleaned);
+                if ($formatted === '' || mb_strlen($formatted) < 10) {
+                    continue;
+                }
+
+                $isDuplicate = false;
+                foreach ($candidates as $existing) {
+                    if (SummaryTextHelper::tokenSimilarity($formatted, $existing['text']) >= 0.80) {
+                        $isDuplicate = true;
+                        break;
+                    }
+                }
+
+                if ($isDuplicate) {
+                    continue;
+                }
+
+                $candidates[] = [
+                    'paragraph' => $pIdx,
+                    'index'     => $sentenceIndex++,
+                    'text'      => $formatted,
+                    'len'       => mb_strlen($formatted),
+                ];
+            }
+        }
+
+        return $candidates;
+    }
+
+    /**
+     * Check whether a line or sentence is purely a salutation/sign-off with no factual action.
+     */
+    private function isPureSalutationOrSignoffLine(string $text): bool
+    {
+        $trimmed = trim($text);
+        if ($trimmed === '') {
+            return true;
+        }
+
+        // Never drop a sentence containing substantive concern verbs/nouns
+        if (preg_match('/\b(?:broken|leak\w*|stopped|failed|error|crash\w*|discrepancy|unpaid|delayed|missing|lost|inc\b|incomplete|forfeit\w*|repair|verify|issue|endorse|correct\w*|inspect\w*|refund|restore|replace\w*|hazard|blocked|blocking|slipped|unplugged|panick\w*|punch\w*|assault\w*|harass\w*)\b/iu', $trimmed)) {
+            return false;
+        }
+
+        if (preg_match('/^(?:(?:good\s+(?:morning|afternoon|day|evening)|greetings|hello|hi|dear|to\s+whom\s+it\s+may\s+concern)\b[^.?!]{0,120})[,:\-.!]?$/iu', $trimmed)) {
+            return true;
+        }
+
+        if (preg_match('/^(?:thank\s+you|thanks(?:\s+(?:so\s+much|in\s+advance))?|sincerely|respectfully(?:\s+yours)?|best\s+regards|kind\s+regards|warm\s+regards|regards|hoping\s+for\s+your)[^.?!]{0,100}[,:\-.!]?$/iu', $trimmed)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Strip leading greeting prefixes and grammar-safe "... that" lead-in wrappers cleanly.
+     */
+    private function cleanSentenceBoilerplate(string $sentence): string
+    {
+        $clean = trim($sentence);
+
+        // Strip opening greeting before a comma (e.g., "Good morning dear administration, ...")
+        $clean = (string) preg_replace(
+            '/^(?:good\s+(?:morning|afternoon|day|evening)|greetings|hello|hi)\b[^,]{0,75},\s*/iu',
+            '',
+            $clean
+        );
+
+        // Strip opening "With due respect," / "Respectfully,"
+        $clean = (string) preg_replace('/^(?:with\s+due\s+respect|respectfully)\s*,\s*/iu', '', $clean);
+
+        // Strip ONLY boilerplate lead-ins ending explicitly in "that " so clauses stay grammatically intact
+        $clean = (string) preg_replace(
+            '/^(?:i\s+am\s+writing\s+(?:this\s+)?to\s+(?:formally\s+)?(?:inform|report|notify|bring\s+to\s+your\s+attention|state|let\s+you\s+know)\s+(?:you\s+)?that|i\s+would\s+like\s+to\s+(?:inform|report|notify)\s+(?:you\s+)?that|i\s+am\s+reporting\s+that|please\s+be\s+informed\s+that)\s+/iu',
+            '',
+            $clean
+        );
+
+        $clean = trim($clean);
+        if ($clean === '') {
+            return '';
+        }
+
+        $firstChar = mb_substr($clean, 0, 1);
+        return mb_strtoupper($firstChar) . mb_substr($clean, 1);
+    }
+
+    /**
+     * Drop self-introductory student profile filler that carries no issue, event, impact, or request.
+     */
+    private function isPureIntroductoryFiller(string $sentence): bool
+    {
+        if (!preg_match('/^i\s+am\s+(?:a|an)\s+[\w\-\s]{1,50}\bstudent\b/iu', $sentence)) {
+            return false;
+        }
+
+        return !preg_match('/\b(?:broken|leak\w*|stopped|failed|error|crash\w*|discrepancy|unpaid|delayed|missing|lost|inc\b|incomplete|forfeit\w*|repair|verify|issue|endorse|correct\w*|inspect\w*|refund|restore|replace\w*|hazard|blocked|blocking|unable|cannot|forfeited)\b/iu', $sentence);
+    }
+
+    /**
+     * Extract meaningful content words from the concern title.
+     *
+     * @return list<string>
+     */
+    private function extractTitleKeywords(string $title): array
+    {
+        $stop = ['with', 'from', 'that', 'this', 'your', 'about', 'after', 'before', 'during', 'affecting', 'concern', 'issue', 'problem', 'request', 'report', 'repeated'];
+        preg_match_all('/[a-z0-9]{4,}/u', strtolower($title), $matches);
+
+        return array_values(array_diff(array_unique($matches[0] ?? []), $stop));
+    }
+
+    /**
+     * Score one sentence across Issue, Events/Dates/Locations, Student Impact, and Requested Assistance.
+     *
+     * @param  list<string>  $titleKeywords
+     * @return array{issue: float, events: float, impact: float, request: float, total: float, is_attachment: bool, has_concrete_date: bool}
+     */
+    private function scoreSummaryCandidate(string $sentence, int $index, int $total, array $titleKeywords): array
+    {
+        $lower = strtolower($sentence);
+        $isEarly = $index <= 1 ? 1.2 : 0.0;
+        $isLate = $index >= max(1, (int) floor($total * 0.6)) ? 1.5 : 0.0;
+
+        // 1. Main issue score (title overlap + factual problem signals)
+        $titleOverlap = 0.0;
+        foreach ($titleKeywords as $kw) {
+            if (str_contains($lower, $kw)) {
+                $titleOverlap += 1.5;
+            }
+        }
+        $issueHits = $this->countDistinctPatternMatches(
+            $sentence,
+            '/\b(?:broken|leaking|leak|stopped|failed|error|crash\w*|shutdown|burning|smoke|spark\w*|flickering|offline|down|delayed|missing|lost|discrepancy|unpaid|incorrect|incomplete|inc\b|skipped|unanswered|auto-submitted|punched|assault\w*|harass\w*|bully\w*|threat\w*|unusable|hazard\w*|unplugged|slipped|slippery|electrical|drainage|cooling|clerical|blocking|forfeit\w*|unresponsive)\b/iu'
+        );
+        $issueScore = min(6.0, $titleOverlap) + ($issueHits * 2.0) + $isEarly;
+
+        // 2. Events, dates, locations, equipment, numeric evidence
+        $dateHits = $this->countDistinctPatternMatches(
+            $sentence,
+            '/\b(?:january|february|march|april|may|june|july|august|september|october|november|december|monday|tuesday|wednesday|thursday|friday|saturday|sunday|yesterday|today|\d{1,2}:\d{2}|20\d{2})\b/iu'
+        );
+        $locationEquipHits = $this->countDistinctPatternMatches(
+            $sentence,
+            '/\b(?:room\s*\d+[a-z]?|laboratory|lab\s*\d+|pc[-\s]*\d+|workstation\w*|window\s*\d+|cashier|registrar|scholarship\s+office|student\s+portal|faculty\s+room|canteen|hallway|[a-z]{2,4}-\d{3})\b/iu'
+        );
+        $metricHits = $this->countDistinctPatternMatches(
+            $sentence,
+            '/\b\d+(?:\.\d+)?%|\b\d+(?:,\d{3})*\s*(?:pesos|php|students|learners|workstations|computers|questions|days|hours|minutes|semesters?)\b/iu'
+        );
+        $timelineHits = $this->countDistinctPatternMatches(
+            $sentence,
+            '/\b(?:visited|emailed|acknowledged|notified|released|appeared|slipped|unplugged|paid|submitted|completed|filed|verbally|skipped|posted|received|contacted|noticed|raised|corrected|reviewed|advised)\b/iu'
+        );
+        $eventsScore = (min(3, $dateHits) * 1.5) + (min(3, $locationEquipHits) * 1.5) + (min(2, $metricHits) * 2.2) + (min(3, $timelineHits) * 1.2);
+
+        // 3. Impact on the student or affected people / safety
+        $impactHits = $this->countDistinctPatternMatches(
+            $sentence,
+            '/\b(?:affect\w*|impact\w*|blocking|blocked|prevent\w*|cannot|unable|forced|forfeit\w*|consequence\w*|hazard\w*|safety|risk|injur\w*|swollen|bleeding|slipped|slippery|electrical|precaution|short-circuit|heat|humidity|concentrate|eligibility|worried|interrupt\w*|disrupt\w*|hamper\w*|unusable|scholarship|renewal|enrollment|pre-register\w*|permit|exam\w*|deadline|progress|finances|share\s+terminals|\d+\s+(?:students|learners))\b/iu'
+        );
+        $impactScore = $impactHits * 2.2;
+
+        // 4. Requested assistance / action
+        $isAttachmentOnly = (bool) preg_match('/^(?:i\s+am\s+attaching|attached\s+(?:here|are|is))\b/iu', $sentence)
+            && !preg_match('/\b(?:request\w*|please|repair|verify|issue|endorse|inspect\w*|certify|restore|expedite)\b/iu', $sentence);
+
+        $requestHits = $this->countDistinctPatternMatches(
+            $sentence,
+            '/\b(?:respectfully\s+request|request\w*|urge|please|asking|need|require\w*|assist\w*|verify|verification|issue|repair|inspect\w*|certify|restore|endorse|expedite|change\s+of\s+grade|correction|replace\w*|retriev\w*|refund|clear\w*|approve|investigat\w*|temporary\s+certification|maintenance)\b/iu'
+        );
+        $requestScore = $isAttachmentOnly
+            ? 0.0
+            : ($requestHits * 2.4) + (preg_match('/\b(?:before|by)\s+(?:next\s+)?(?:monday|tuesday|wednesday|thursday|friday|january|february|march|april|may|june|july|august|september|october|november|december)/iu', $sentence) ? 1.5 : 0.0) + ($requestHits > 0 ? $isLate : 0.0);
+
+        return [
+            'issue'             => round($issueScore, 2),
+            'events'            => round($eventsScore, 2),
+            'impact'            => round($impactScore, 2),
+            'request'           => round($requestScore, 2),
+            'total'             => round($issueScore + $eventsScore + $impactScore + $requestScore - ($isAttachmentOnly ? 5.0 : 0.0), 2),
+            'is_attachment'     => $isAttachmentOnly,
+            'has_concrete_date' => $dateHits > 0,
+        ];
+    }
+
+    private function countDistinctPatternMatches(string $text, string $pattern): int
+    {
+        if (!preg_match_all($pattern, $text, $matches)) {
+            return 0;
+        }
+
+        $normalized = array_map(fn (string $m): string => strtolower(trim($m)), $matches[0]);
+
+        return count(array_unique($normalized));
+    }
+
+    /**
+     * Select 2-3 concise, non-redundant complete sentences across main issue, request,
+     * student impact, and high-evidence uncovered events without greedily padding to 800 chars.
+     *
+     * @param  list<array{paragraph: int, index: int, text: string, len: int, scores: array<string, mixed>}>  $candidates
+     * @return list<int>
+     */
+    private function selectSummarySentenceIndices(array $candidates, int $maxLen, int $sourceLen): array
+    {
+        $selectedBySlot = [];
+
+        $pickBest = function (array $excluded, callable $scorer) use ($candidates): ?int {
+            $bestIdx = null;
+            $bestScore = 0.0;
+
+            foreach ($candidates as $idx => $cand) {
+                if (in_array($idx, $excluded, true)) {
+                    continue;
+                }
+
+                $redundant = false;
+                foreach ($excluded as $exIdx) {
+                    if (SummaryTextHelper::tokenSimilarity($cand['text'], $candidates[$exIdx]['text']) >= 0.55) {
+                        $redundant = true;
+                        break;
+                    }
+                }
+                if ($redundant) {
+                    continue;
+                }
+
+                $score = (float) $scorer($cand, $idx);
+                if ($score > $bestScore) {
+                    $bestScore = $score;
+                    $bestIdx = $idx;
+                }
+            }
+
+            return $bestIdx;
+        };
+
+        $usedParagraphs = static function (array $indices) use ($candidates): array {
+            return array_values(array_unique(array_map(fn (int $i): int => $candidates[$i]['paragraph'], $indices)));
+        };
+
+        $calcLen = static function (array $indices) use ($candidates): int {
+            if (empty($indices)) {
+                return 0;
+            }
+            $sum = array_sum(array_map(fn (int $i): int => $candidates[$i]['len'], $indices));
+            return $sum + max(0, count($indices) - 1);
+        };
+
+        $totalCandidates = count($candidates);
+        $softTargetLen = min($maxLen, max(240, min(450, (int) round($sourceLen * 0.55))));
+
+        // Slot 1: Main Issue anchor (favoring early / first-half problem statements with concrete location/equipment)
+        $issueIdx = $pickBest([], function ($c, int $idx) use ($totalCandidates) {
+            if ($c['scores']['is_attachment']) {
+                return 0.0;
+            }
+            $firstHalfBonus = $idx <= (int) floor($totalCandidates / 2) ? 2.5 : 0.0;
+            return $c['scores']['issue'] + (0.6 * $c['scores']['events']) + $firstHalfBonus;
+        });
+        if ($issueIdx !== null) {
+            $selectedBySlot['issue'] = $issueIdx;
+        }
+
+        // Slot 2: Requested assistance / resolution
+        $requestIdx = $pickBest(array_values($selectedBySlot), function ($c) {
+            if ($c['scores']['request'] < 2.4) {
+                return 0.0;
+            }
+            return $c['scores']['request'] + (0.3 * $c['scores']['events']);
+        });
+        if ($requestIdx !== null) {
+            $selectedBySlot['request'] = $requestIdx;
+        }
+
+        // Slot 3: Impact on student / safety / consequences
+        $impactIdx = $pickBest(array_values($selectedBySlot), function ($c) {
+            if ($c['scores']['impact'] < 2.0) {
+                return 0.0;
+            }
+            return $c['scores']['impact']
+                + (0.9 * $c['scores']['events'])
+                + ($c['scores']['has_concrete_date'] ? 2.0 : 0.0)
+                - ($c['scores']['is_attachment'] ? 6.0 : 0.0);
+        });
+        if ($impactIdx !== null) {
+            $selectedBySlot['impact'] = $impactIdx;
+        }
+
+        // Slot 4 (Optional Event): Only when < 3 sentences selected OR an uncovered high-evidence event fits softTargetLen
+        $coveredParagraphs = $usedParagraphs(array_values($selectedBySlot));
+        $eventIdx = $pickBest(array_values($selectedBySlot), function ($c) use ($coveredParagraphs, $selectedBySlot) {
+            if ($c['scores']['is_attachment']) {
+                return 0.0;
+            }
+            $isUncovered = !in_array($c['paragraph'], $coveredParagraphs, true);
+            if (count($selectedBySlot) >= 3 && (!$isUncovered || $c['scores']['events'] < 3.0)) {
+                return 0.0;
+            }
+            if (($c['scores']['events'] + $c['scores']['issue']) <= 0.5) {
+                return 0.0;
+            }
+            return $c['scores']['events'] + (0.5 * $c['scores']['issue']) + ($isUncovered ? 4.0 : 0.0);
+        });
+        if ($eventIdx !== null) {
+            $withEvent = array_merge(array_values($selectedBySlot), [$eventIdx]);
+            if (count($selectedBySlot) < 3 || $calcLen($withEvent) <= $softTargetLen) {
+                $selectedBySlot['event'] = $eventIdx;
+            }
+        }
+
+        // Ensure multi-sentence concerns get at least 2 distinct sentences when a non-redundant second exists within maxLen
+        if (count($selectedBySlot) === 1 && $totalCandidates >= 2) {
+            $secondIdx = $pickBest(array_values($selectedBySlot), function ($c) use ($calcLen, $selectedBySlot, $maxLen) {
+                if ($c['scores']['is_attachment']) {
+                    return 0.0;
+                }
+                if ($calcLen(array_merge(array_values($selectedBySlot), [$c['index']])) > $maxLen) {
+                    return 0.0;
+                }
+                return max(0.1, $c['scores']['total']);
+            });
+            if ($secondIdx !== null) {
+                $selectedBySlot['secondary'] = $secondIdx;
+            }
+        }
+
+        // If selected slots exceed configured $maxLen, swap long optional slots or drop lowest priority complete sentences
+        $dropOrder = ['secondary', 'event', 'impact', 'request', 'issue'];
+        while ($calcLen(array_values($selectedBySlot)) > $maxLen && count($selectedBySlot) > 1) {
+            $swapped = false;
+            foreach ($dropOrder as $slot) {
+                if (!isset($selectedBySlot[$slot])) {
+                    continue;
+                }
+                $currentSlotIdx = $selectedBySlot[$slot];
+                $currentLen = $candidates[$currentSlotIdx]['len'];
+                $otherIndices = array_values(array_diff(array_values($selectedBySlot), [$currentSlotIdx]));
+
+                $shorterAlt = $pickBest(array_merge($otherIndices, [$currentSlotIdx]), function ($c) use ($slot, $currentLen, $calcLen, $otherIndices, $maxLen) {
+                    if ($c['len'] >= $currentLen) {
+                        return 0.0;
+                    }
+                    if ($calcLen(array_merge($otherIndices, [$c['index']])) > $maxLen) {
+                        return 0.0;
+                    }
+                    if ($slot === 'event') {
+                        return $c['scores']['events'];
+                    }
+                    if ($slot === 'secondary') {
+                        return $c['scores']['total'];
+                    }
+                    return $c['scores'][$slot] ?? 0.0;
+                });
+
+                if ($shorterAlt !== null) {
+                    $selectedBySlot[$slot] = $shorterAlt;
+                    $swapped = true;
                     break;
                 }
             }
 
-            if (!$coreProblem) {
-                foreach ($sentences as $s) {
-                    $sTrim = trim($s);
-                    if (preg_match('/^(?:i am a|i am currently|during our|we attempted)\b/i', $sTrim)) continue;
-                    if (mb_strlen($sTrim) > 15) {
-                        $coreProblem = $sTrim;
-                        break;
-                    }
+            if ($swapped) {
+                continue;
+            }
+
+            foreach ($dropOrder as $slot) {
+                if (isset($selectedBySlot[$slot])) {
+                    unset($selectedBySlot[$slot]);
+                    break;
                 }
             }
-            if (!$coreProblem) {
-                $coreProblem = $sentences[0] ?? $cleanedDesc;
-            }
-
-            // Clean off leading prepositions if any: "inside Lab 3, computer workstation..." -> "Computer workstation..."
-            $coreProblem = preg_replace('/^(?:inside|at|in|on)\s+[^,]+,\s*/i', '', $coreProblem);
-            // Clean off tail boilerplate
-            $coreProblem = preg_replace('/\s*(?:we attempted to|please look into|thank you|hoping for)[^.!?]*[.!?]?$/i', '', $coreProblem);
-            $coreProblem = ucfirst(rtrim(trim($coreProblem), '.'));
-
-            $prefix = $location ? "{$location}: " : "";
-            if ($location && str_contains(strtolower($coreProblem), strtolower($location))) {
-                $prefix = "";
-            }
-
-            $candidate = $prefix . $coreProblem . '.';
-            if (mb_strlen($candidate) <= $maxLen) {
-                return $candidate;
-            }
         }
 
-        // Fallback: General synthesized synopsis
-        $sentences = preg_split('/(?<=[.?!])\s+/', $cleanedDesc);
-        $meaningful = [];
-        foreach ($sentences as $s) {
-            $st = trim($s);
-            if (preg_match('/^(?:thank you|please|sincerely|greetings)\b/i', $st)) continue;
-            if (mb_strlen($st) > 8) {
-                $meaningful[] = $st;
-            }
-        }
-        $extracted = !empty($meaningful) ? implode(' ', array_slice($meaningful, 0, 2)) : $cleanedDesc;
-        $extracted = rtrim(trim($extracted), '.');
-
-        $isGenericTitle = (bool) preg_match('/^(?:concern|issue|problem|inquiry|help|request|question|i need help)[.!?:-]?$/i', trim($title));
-        if (!$isGenericTitle && !str_contains(strtolower($extracted), strtolower($title))) {
-            $candidate = rtrim($title, '.!?:-') . ': ' . $extracted . '.';
-        } else {
-            $candidate = $extracted . '.';
+        $selected = array_values($selectedBySlot);
+        if (empty($selected)) {
+            return [0];
         }
 
-        if (mb_strlen($candidate) > $maxLen) {
-            $candidate = mb_substr($candidate, 0, $maxLen - 3) . '...';
-        }
-
-        return $candidate;
+        return $selected;
     }
 
     /**

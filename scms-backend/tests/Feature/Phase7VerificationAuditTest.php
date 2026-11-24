@@ -260,9 +260,10 @@ class Phase7VerificationAuditTest extends TestCase
 
     // ── 4. AI Summary Verification & Fallback ────────────────────────────────
 
-    public function test_v09_summary_is_concise_under_300_chars_and_identifies_problem_and_location(): void
+    public function test_v09_summary_is_complete_within_budget_and_identifies_problem_and_location(): void
     {
         $service = app(LocalSentimentService::class);
+        $maxLen = (int) config('classification.max_summary_length', 800);
 
         $veryLongDescription = 'Greetings to the university support team. I am a third-year computer science student enrolled in Section 3A. During our scheduled practical examination session this afternoon at approximately 2:30 PM inside Computer Laboratory Room 302, workstation PC-18 experienced a sudden unexpected shutdown. The machine failed to restart when the power button was pressed and emitted a burning smell, causing our programming test progress to be interrupted completely. We attempted to inform the lab proctor but were advised to submit a formal incident report here for technical maintenance inspection.';
 
@@ -273,12 +274,15 @@ class Phase7VerificationAuditTest extends TestCase
 
         $summary = $result['summary'];
 
-        // Capped at 300 chars
-        $this->assertLessThanOrEqual(300, mb_strlen($summary));
-        // Meaningfully shorter than original (~550 chars)
+        // Within configurable budget on complete sentence boundaries
+        $this->assertLessThanOrEqual($maxLen, mb_strlen($summary));
         $this->assertLessThan(mb_strlen($veryLongDescription), mb_strlen($summary));
-        // Preserves key location and equipment
+        $this->assertMatchesRegularExpression('/[.?!]$/', $summary);
+        $this->assertStringNotContainsString('...', $summary);
+        // Preserves key location, equipment, and impact
         $this->assertStringContainsString('Room 302', $summary);
+        $this->assertStringContainsString('PC-18', $summary);
+        $this->assertStringContainsString('burning smell', $summary);
         // Does not include conversational pleasantries
         $this->assertStringNotContainsString('Greetings to the university support team', $summary);
     }

@@ -29,6 +29,10 @@
         <env name="MAIL_MAILER" value="array"/>
         <env name="QUEUE_CONNECTION" value="sync"/>
         <env name="SESSION_DRIVER" value="array"/>
+        <env name="GEMINI_ENABLED" value="false" force="true"/>
+        <env name="GEMINI_API_KEY" value="" force="true"/>
+        <env name="GEMINI_MODEL" value="gemini-3.8-flash" force="true"/>
+        <env name="ANTHROPIC_API_KEY" value="" force="true"/>
         <env name="PULSE_ENABLED" value="false"/>
         <env name="TELESCOPE_ENABLED" value="false"/>
         <env name="NIGHTWATCH_ENABLED" value="false"/>

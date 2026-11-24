@@ -12,7 +12,7 @@ class AnthropicService
 
     public function __construct()
     {
-        $this->apiKey = env('ANTHROPIC_API_KEY', '');
+        $this->apiKey = (string) config('services.anthropic.api_key', '');
         $this->model = 'claude-3-5-sonnet-20241022';
     }
 
@@ -66,7 +66,7 @@ class AnthropicService
     protected function makeRequest(string $systemPrompt, string $userContent): ?array
     {
         if (empty($this->apiKey)) {
-            Log::warning('Anthropic API key is missing.');
+            Log::debug('AnthropicService: API key not configured, skipping.');
             return null;
         }
 

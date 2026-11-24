@@ -10,6 +10,28 @@ use Illuminate\Http\Request;
 class ConcernController extends Controller
 {
     /**
+     * Internal AI reasoning, priority override, and CAD workflow fields that must
+     * never be returned in student-facing API payloads.
+     *
+     * @var list<string>
+     */
+    private const STUDENT_HIDDEN_FIELDS = [
+        'priority_override_reason',
+        'priority_overridden_by',
+        'priority_overridden_at',
+        'ai_priority',
+        'ai_priority_explanation',
+        'classification_explanation',
+        'is_priority_overridden',
+        'recurring_incident_id',
+        'critical_notified_at',
+        'cad_signed_document_path',
+        'cad_department_notes',
+        'cad_submission_notes',
+        'cad_decision_notes',
+    ];
+
+    /**
      * Generate an AI-assisted routing recommendation for a non-academic concern.
      * Recommends an operational department from the database based on concern title and description.
      */
@@ -160,10 +182,9 @@ class ConcernController extends Controller
             $geminiService = app(\App\Services\GeminiSentimentService::class);
             $geminiResult  = $geminiService->analyzeConcern($concern->title, $concern->description, $workflowType);
 
-            // Use Gemini sentiment values when available; fall back to local
+            // Use Gemini values when available; record non-zero token usage only when Gemini generated the summary
             $sentimentScore            = $geminiResult['sentiment_score'] ?? $localResult['sentiment_score'];
             $sentimentLabel            = $geminiResult['sentiment_label'] ?? $localResult['sentiment_label'];
-            $tokensUsed                = $geminiResult['api_tokens_used'] ?? 0;
             $aiPriority                = $geminiResult['priority_suggestion'] ?? $localResult['priority_suggestion'];
             $aiPriorityExplanation     = $geminiResult['priority_explanation'] ?? $localResult['priority_explanation'];
             $issueCategory             = $geminiResult['issue_category'] ?? $localResult['issue_category'];
@@ -174,7 +195,13 @@ class ConcernController extends Controller
                 : $localResult['issue_subcategory'];
             $classificationExplanation = $geminiResult['classification_explanation'] ?? $localResult['classification_explanation'];
             $classificationConfidence  = $geminiResult['classification_confidence'] ?? $localResult['classification_confidence'];
-            $aiSummary                 = $geminiResult['summary'] ?? $localResult['summary'];
+            $rawGeminiSummary          = isset($geminiResult['summary']) && is_string($geminiResult['summary'])
+                ? trim($geminiResult['summary'])
+                : '';
+            $hasGeminiSummary          = $rawGeminiSummary !== ''
+                && !\App\Support\SummaryTextHelper::isVerbatimOrNearCopy($rawGeminiSummary, (string) $concern->description);
+            $aiSummary                 = $hasGeminiSummary ? $rawGeminiSummary : $localResult['summary'];
+            $tokensUsed                = $hasGeminiSummary ? (int) ($geminiResult['api_tokens_used'] ?? 0) : 0;
 
             $concern->update([
                 'sentiment_score'            => $sentimentScore,
@@ -248,15 +275,7 @@ class ConcernController extends Controller
         }
 
         $freshConcern = $concern->fresh(['academicUnit', 'department', 'student']);
-        $freshConcern->makeHidden([
-            'priority_override_reason',
-            'priority_overridden_by',
-            'priority_overridden_at',
-            'ai_priority',
-            'is_priority_overridden',
-            'recurring_incident_id',
-            'critical_notified_at',
-        ]);
+        $freshConcern->makeHidden(self::STUDENT_HIDDEN_FIELDS);
         $freshConcern->prediction = app(\App\Services\ResolutionPredictionService::class)->predictForStudent($freshConcern);
 
         return response()->json([
@@ -276,15 +295,7 @@ class ConcernController extends Controller
             ->get();
 
         $concerns->each(function ($c) {
-            $c->makeHidden([
-                'priority_override_reason',
-                'priority_overridden_by',
-                'priority_overridden_at',
-                'ai_priority',
-                'is_priority_overridden',
-                'recurring_incident_id',
-                'critical_notified_at',
-            ]);
+            $c->makeHidden(self::STUDENT_HIDDEN_FIELDS);
         });
 
         return response()->json([
@@ -363,7 +374,6 @@ class ConcernController extends Controller
 
             $sentimentScore            = $geminiResult['sentiment_score'] ?? $localResult['sentiment_score'];
             $sentimentLabel            = $geminiResult['sentiment_label'] ?? $localResult['sentiment_label'];
-            $tokensUsed                = $geminiResult['api_tokens_used'] ?? 0;
             $aiPriority                = $geminiResult['priority_suggestion'] ?? $localResult['priority_suggestion'];
             $aiPriorityExplanation     = $geminiResult['priority_explanation'] ?? $localResult['priority_explanation'];
             $issueCategory             = $geminiResult['issue_category'] ?? $localResult['issue_category'];
@@ -372,7 +382,13 @@ class ConcernController extends Controller
                 : $localResult['issue_subcategory'];
             $classificationExplanation = $geminiResult['classification_explanation'] ?? $localResult['classification_explanation'];
             $classificationConfidence  = $geminiResult['classification_confidence'] ?? $localResult['classification_confidence'];
-            $aiSummary                 = $geminiResult['summary'] ?? $localResult['summary'];
+            $rawGeminiSummary          = isset($geminiResult['summary']) && is_string($geminiResult['summary'])
+                ? trim($geminiResult['summary'])
+                : '';
+            $hasGeminiSummary          = $rawGeminiSummary !== ''
+                && !\App\Support\SummaryTextHelper::isVerbatimOrNearCopy($rawGeminiSummary, (string) $concern->description);
+            $aiSummary                 = $hasGeminiSummary ? $rawGeminiSummary : $localResult['summary'];
+            $tokensUsed                = $hasGeminiSummary ? (int) ($geminiResult['api_tokens_used'] ?? 0) : 0;
 
             $updateData = [
                 'sentiment_score'            => $sentimentScore,
@@ -426,17 +442,7 @@ class ConcernController extends Controller
         }
 
         $freshConcern = $concern->fresh(['academicUnit', 'department']);
-        $freshConcern->makeHidden([
-            'priority_override_reason',
-            'priority_overridden_by',
-            'priority_overridden_at',
-            'ai_priority',
-            'ai_priority_explanation',
-            'classification_explanation',
-            'is_priority_overridden',
-            'recurring_incident_id',
-            'critical_notified_at',
-        ]);
+        $freshConcern->makeHidden(self::STUDENT_HIDDEN_FIELDS);
         $freshConcern->prediction = app(\App\Services\ResolutionPredictionService::class)->predictForStudent($freshConcern);
 
         return response()->json([
@@ -470,21 +476,7 @@ class ConcernController extends Controller
             );
         }
 
-        $concern->makeHidden([
-            'priority_override_reason',
-            'priority_overridden_by',
-            'priority_overridden_at',
-            'ai_priority',
-            'ai_priority_explanation',
-            'classification_explanation',
-            'is_priority_overridden',
-            'recurring_incident_id',
-            'critical_notified_at',
-            'cad_signed_document_path',
-            'cad_department_notes',
-            'cad_submission_notes',
-            'cad_decision_notes',
-        ]);
+        $concern->makeHidden(self::STUDENT_HIDDEN_FIELDS);
 
         $concern->prediction = app(\App\Services\ResolutionPredictionService::class)->predictForStudent($concern);
 
@@ -550,9 +542,12 @@ class ConcernController extends Controller
             'notes' => 'Concern withdrawn by student.',
         ]);
 
+        $freshConcern = $concern->fresh(['academicUnit', 'department']);
+        $freshConcern->makeHidden(self::STUDENT_HIDDEN_FIELDS);
+
         return response()->json([
             'message' => 'Concern withdrawn successfully.',
-            'concern' => $concern->fresh(['academicUnit', 'department']),
+            'concern' => $freshConcern,
         ]);
     }
 
@@ -578,9 +573,12 @@ class ConcernController extends Controller
             'notes' => 'Concern reopened by student.',
         ]);
 
+        $freshConcern = $concern->fresh(['academicUnit', 'department']);
+        $freshConcern->makeHidden(self::STUDENT_HIDDEN_FIELDS);
+
         return response()->json([
             'message' => 'Concern reopened successfully.',
-            'concern' => $concern->fresh(['academicUnit', 'department']),
+            'concern' => $freshConcern,
         ]);
     }
 

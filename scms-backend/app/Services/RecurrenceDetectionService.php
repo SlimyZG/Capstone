@@ -92,7 +92,11 @@ class RecurrenceDetectionService
 
                 // Stage 3: Semantic Verification
                 $isVerified = true;
-                if ($this->gemini && !empty(config('services.gemini.api_key'))) {
+                if (
+                    $this->gemini
+                    && filter_var(config('services.gemini.enabled', false), FILTER_VALIDATE_BOOLEAN)
+                    && trim((string) config('services.gemini.api_key', '')) !== ''
+                ) {
                     $verified = $this->gemini->verifyIncidentSimilarity(
                         $candidate->title,
                         $candidate->summary ?? '',

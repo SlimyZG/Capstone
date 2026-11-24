@@ -1,7 +1,19 @@
-import { Sparkles, Cpu, Bot, AlertCircle, Clock } from 'lucide-react';
+import { useEffect, useId, useState } from 'react';
+import { Sparkles, Cpu, Bot, AlertCircle, Clock, ChevronDown, ChevronUp } from 'lucide-react';
+import { buildSummaryPreview } from '../utils/summaryPreview';
 
 const AiSummaryCard = ({ summary, metadata = null, title = 'AI Issue Summary', className = '' }) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const summaryId = useId();
+
+  useEffect(() => {
+    setIsExpanded(false);
+  }, [summary]);
+
   if (!summary) return null;
+
+  const { preview, full, isCollapsible } = buildSummaryPreview(summary);
+  if (!full) return null;
 
   // Determine source badge styling and label
   let sourceBadge = (
@@ -26,7 +38,7 @@ const AiSummaryCard = ({ summary, metadata = null, title = 'AI Issue Summary', c
           Processing...
         </span>
       );
-    } else if (metadata.source === 'gemini') {
+    } else if (metadata.source === 'gemini' && !metadata.is_fallback) {
       sourceBadge = (
         <span className="inline-flex items-center gap-1 text-[11px] text-indigo-700 font-semibold bg-indigo-50 px-2.5 py-0.5 rounded-full border border-indigo-200" title="Generated using Google Gemini AI">
           <Bot size={11} className="text-indigo-600 shrink-0" />
@@ -56,9 +68,35 @@ const AiSummaryCard = ({ summary, metadata = null, title = 'AI Issue Summary', c
           {sourceBadge}
         </div>
       </div>
-      <p className="text-sm text-slate-800 leading-relaxed font-normal break-words whitespace-normal">
-        {summary}
+      <p
+        id={summaryId}
+        className="text-sm text-slate-800 leading-relaxed font-normal break-words whitespace-normal"
+      >
+        {isExpanded || !isCollapsible ? full : preview}
       </p>
+      {isCollapsible && (
+        <div className="mt-2.5 flex items-center justify-between gap-2">
+          <button
+            type="button"
+            aria-expanded={isExpanded}
+            aria-controls={summaryId}
+            onClick={() => setIsExpanded((prev) => !prev)}
+            className="inline-flex items-center gap-1 text-xs font-bold text-[#1e3a8a] hover:text-blue-700 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 rounded cursor-pointer"
+          >
+            {isExpanded ? (
+              <>
+                <ChevronUp size={14} />
+                <span>Show Less</span>
+              </>
+            ) : (
+              <>
+                <ChevronDown size={14} />
+                <span>Show Full Summary</span>
+              </>
+            )}
+          </button>
+        </div>
+      )}
     </div>
   );
 };

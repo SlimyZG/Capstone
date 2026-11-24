@@ -35,10 +35,33 @@ return [
         ],
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Google Gemini AI Configuration
+    |--------------------------------------------------------------------------
+    |
+    | PRIVACY & DATA-HANDLING WARNING:
+    | Enabling Gemini (GEMINI_ENABLED=true) transmits student concern titles
+    | and descriptions to the external Google Gemini API for sentiment,
+    | classification, priority suggestion, routing recommendation, and issue
+    | summarization. Gemini is disabled by default across all environments and
+    | is NEVER automatically enabled merely because GEMINI_API_KEY is set.
+    | Require explicit GEMINI_ENABLED=true (use synthetic test concerns only
+    | on Free-tier Gemini in local development, and require formal UCLM
+    | institutional approval before enabling in production).
+    |
+    */
+
     'gemini' => [
-        'api_key' => env('GEMINI_API_KEY', ''),
-        'model'   => env('GEMINI_MODEL', 'gemini-3.5-flash'),
-        'timeout' => 20,
+        'enabled'     => filter_var(env('GEMINI_ENABLED', false), FILTER_VALIDATE_BOOLEAN),
+        'api_key'     => env('GEMINI_API_KEY', ''),
+        'model'       => env('GEMINI_MODEL', 'gemini-3.8-flash'),
+        'timeout'     => (int) env('GEMINI_TIMEOUT', 35),
+        'max_retries' => (int) env('GEMINI_MAX_RETRIES', 1),
+    ],
+
+    'anthropic' => [
+        'api_key' => env('ANTHROPIC_API_KEY', ''),
     ],
 
 ];
