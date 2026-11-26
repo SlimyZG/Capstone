@@ -18,6 +18,21 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Password Reset Mail Delivery Driver
+    |--------------------------------------------------------------------------
+    |
+    | Controls how password-reset emails are dispatched independently of
+    | MAIL_MAILER:
+    | - "mail" (default): Uses Laravel's Notification mail channel (e.g. local Brevo SMTP).
+    | - "brevo_api": Sends via Brevo's HTTPS Transactional Email API (port 443) for
+    |   production hosts such as Railway where outbound SMTP connections are blocked.
+    |
+    */
+
+    'password_reset_driver' => env('PASSWORD_RESET_MAIL_DRIVER', 'mail'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Mailer Configurations
     |--------------------------------------------------------------------------
     |

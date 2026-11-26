@@ -193,14 +193,20 @@ class AuthController extends Controller
                     $token = $tokens->create($user);
                     $tokenCreated = true;
 
-                    // When MAIL_MAILER is 'log' in local development, avoid writing raw tokens into application log files
-                    // unless an active mail transport or test fake is intercepting notifications.
-                    $mailer = (string) config('mail.default', 'log');
-                    $isNotificationFaked = Notification::getFacadeRoot() instanceof \Illuminate\Support\Testing\Fakes\NotificationFake;
-                    $isMailFaked = Mail::getFacadeRoot() instanceof \Illuminate\Support\Testing\Fakes\MailFake;
+                    $resetDriver = strtolower(trim((string) config('mail.password_reset_driver', 'mail')));
 
-                    if ($mailer !== 'log' || $isNotificationFaked || $isMailFaked) {
-                        $user->sendPasswordResetNotification($token);
+                    if ($resetDriver === 'brevo_api') {
+                        app(\App\Services\BrevoApiService::class)->sendPasswordResetEmail($user, $token);
+                    } else {
+                        // When MAIL_MAILER is 'log' in local development, avoid writing raw tokens into application log files
+                        // unless an active mail transport or test fake is intercepting notifications.
+                        $mailer = (string) config('mail.default', 'log');
+                        $isNotificationFaked = Notification::getFacadeRoot() instanceof \Illuminate\Support\Testing\Fakes\NotificationFake;
+                        $isMailFaked = Mail::getFacadeRoot() instanceof \Illuminate\Support\Testing\Fakes\MailFake;
+
+                        if ($mailer !== 'log' || $isNotificationFaked || $isMailFaked) {
+                            $user->sendPasswordResetNotification($token);
+                        }
                     }
                 }
             }
@@ -216,16 +222,25 @@ class AuthController extends Controller
                 }
             }
 
-            // Log non-sensitive transport diagnostics only — never log reset tokens, passwords, email addresses, or SMTP credentials.
+            // Log non-sensitive transport diagnostics only — never log reset tokens, passwords, email addresses, or API/SMTP credentials.
+            $resetDriver = strtolower(trim((string) config('mail.password_reset_driver', 'mail')));
             $mailer = (string) config('mail.default', 'log');
-            Log::error('Password reset notification dispatch failed.', [
+            $logContext = [
+                'transport' => $resetDriver === 'brevo_api' ? 'brevo_api' : $mailer,
                 'exception' => class_basename($e),
                 'code' => (int) $e->getCode(),
                 'mailer' => $mailer,
-                'host' => config("mail.mailers.{$mailer}.host"),
-                'port' => config("mail.mailers.{$mailer}.port"),
-                'scheme' => config("mail.mailers.{$mailer}.scheme"),
-            ]);
+            ];
+
+            if ($resetDriver === 'brevo_api') {
+                $logContext['endpoint'] = \App\Services\BrevoApiService::ENDPOINT;
+            } else {
+                $logContext['host'] = config("mail.mailers.{$mailer}.host");
+                $logContext['port'] = config("mail.mailers.{$mailer}.port");
+                $logContext['scheme'] = config("mail.mailers.{$mailer}.scheme");
+            }
+
+            Log::error('Password reset notification dispatch failed.', $logContext);
         }
 
         return response()->json([

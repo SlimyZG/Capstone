@@ -8,6 +8,17 @@ use Illuminate\Notifications\Messages\MailMessage;
 class ResetPasswordNotification extends ResetPassword
 {
     /**
+     * Public accessor for the password-reset URL so both Laravel's mail channel
+     * and BrevoApiService share one authoritative URL generator.
+     *
+     * @param  mixed  $notifiable
+     */
+    public function buildResetUrl($notifiable): string
+    {
+        return $this->resetUrl($notifiable);
+    }
+
+    /**
      * Build the password reset URL pointing to the React frontend Reset Password route.
      *
      * @param  mixed  $notifiable

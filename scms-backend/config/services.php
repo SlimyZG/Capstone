@@ -64,4 +64,21 @@ return [
         'api_key' => env('ANTHROPIC_API_KEY', ''),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Brevo Transactional Email HTTPS API (Password Reset Delivery)
+    |--------------------------------------------------------------------------
+    |
+    | Used when PASSWORD_RESET_MAIL_DRIVER=brevo_api (e.g. on Railway where
+    | outbound SMTP ports are blocked). The endpoint is fixed to Brevo's
+    | official v3 transactional email API and never accepts arbitrary URLs.
+    |
+    */
+
+    'brevo' => [
+        'api_key'  => env('BREVO_API_KEY', ''),
+        'endpoint' => 'https://api.brevo.com/v3/smtp/email',
+        'timeout'  => (int) env('BREVO_API_TIMEOUT', 15),
+    ],
+
 ];

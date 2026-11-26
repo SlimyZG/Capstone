@@ -6,10 +6,13 @@ use App\Models\AcademicUnit;
 use App\Models\ClassList;
 use App\Models\User;
 use App\Notifications\ResetPasswordNotification;
+use App\Services\BrevoApiService;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Password;
@@ -524,5 +527,212 @@ class AuthAndPasswordResetTest extends TestCase
         $this->assertDatabaseHas('password_reset_tokens', [
             'email' => $otherStudent->email,
         ]);
+    }
+
+    public function test_brevo_api_driver_sends_password_reset_email_with_vercel_url_even_when_mail_mailer_is_log(): void
+    {
+        RateLimiter::clear('forgot-password:' . sha1($this->student->email . '|127.0.0.1'));
+        Notification::fake();
+
+        config([
+            'mail.default' => 'log',
+            'mail.password_reset_driver' => 'brevo_api',
+            'mail.from.address' => 'slimyzg82@gmail.com',
+            'mail.from.name' => 'UCLM SCMS',
+            'services.brevo.api_key' => 'xkeysib-synthetic-test-api-key-998877',
+            'app.frontend_url' => 'https://scms-uclm.vercel.app',
+        ]);
+
+        Http::fake([
+            BrevoApiService::ENDPOINT => Http::response([
+                'messageId' => '<202611260830.12345@smtp-relay.mailin.fr>',
+            ], 201),
+        ]);
+
+        $response = $this->postJson('/api/forgot-password', [
+            'email' => $this->student->email,
+        ]);
+
+        $response->assertOk()
+            ->assertJsonPath(
+                'message',
+                'If your email is registered in our system, you will receive a password reset link shortly.'
+            );
+
+        // Ensure Laravel Notification mail channel was NOT used when brevo_api is active
+        Notification::assertNothingSent();
+
+        // Ensure hashed token was stored in password_reset_tokens
+        $tokenRow = DB::table('password_reset_tokens')
+            ->where('email', $this->student->email)
+            ->first();
+        $this->assertNotNull($tokenRow);
+
+        $extractedToken = null;
+
+        Http::assertSentCount(1);
+        Http::assertSent(function (\Illuminate\Http\Client\Request $request) use ($tokenRow, &$extractedToken) {
+            $this->assertSame('POST', $request->method());
+            $this->assertSame(BrevoApiService::ENDPOINT, $request->url());
+            $this->assertTrue($request->hasHeader('accept', 'application/json'));
+            $this->assertTrue($request->hasHeader('api-key', 'xkeysib-synthetic-test-api-key-998877'));
+            $this->assertStringContainsString('application/json', $request->header('content-type')[0] ?? '');
+
+            $data = $request->data();
+            $this->assertSame('slimyzg82@gmail.com', $data['sender']['email'] ?? null);
+            $this->assertSame('UCLM SCMS', $data['sender']['name'] ?? null);
+            $this->assertSame($this->student->email, $data['to'][0]['email'] ?? null);
+            $this->assertSame($this->student->name, $data['to'][0]['name'] ?? null);
+            $this->assertSame('UCLM SCMS — Password Reset Request', $data['subject'] ?? null);
+
+            $html = (string) ($data['htmlContent'] ?? '');
+            $text = (string) ($data['textContent'] ?? '');
+            $this->assertNotEmpty($html);
+            $this->assertNotEmpty($text);
+
+            $this->assertMatchesRegularExpression(
+                '#https://scms-uclm\.vercel\.app/reset-password\?token=([^&"\'\s]+)&email=' . preg_quote(urlencode($this->student->email), '#') . '#',
+                $html,
+                'Expected HTML email to contain the URL-encoded Vercel password-reset link.'
+            );
+
+            if (preg_match('#https://scms-uclm\.vercel\.app/reset-password\?token=([^&"\'\s]+)&email=#', $html, $m)) {
+                $extractedToken = urldecode($m[1]);
+            }
+
+            $this->assertNotNull($extractedToken);
+            $this->assertTrue(Hash::check((string) $extractedToken, $tokenRow->token));
+            $this->assertStringNotContainsString('http://localhost', $html);
+
+            return true;
+        });
+
+        // Verify the token extracted from the Brevo HTML email validates and resets the password
+        $this->postJson('/api/reset-password/validate', [
+            'token' => $extractedToken,
+            'email' => $this->student->email,
+        ])->assertOk()->assertJsonPath('valid', true);
+
+        $this->postJson('/api/reset-password', [
+            'token' => $extractedToken,
+            'email' => $this->student->email,
+            'password' => 'BrevoResetPass123!',
+            'password_confirmation' => 'BrevoResetPass123!',
+        ])->assertOk();
+
+        $this->assertTrue(Hash::check('BrevoResetPass123!', $this->student->fresh()->password));
+    }
+
+    public function test_brevo_api_nonexistent_email_preserves_account_enumeration_protection_and_makes_zero_http_calls(): void
+    {
+        RateLimiter::clear('forgot-password:' . sha1('ghost.student@uclm.edu.ph|127.0.0.1'));
+
+        config([
+            'mail.password_reset_driver' => 'brevo_api',
+            'services.brevo.api_key' => 'xkeysib-synthetic-test-api-key-998877',
+        ]);
+
+        Http::fake();
+
+        $this->postJson('/api/forgot-password', [
+            'email' => 'ghost.student@uclm.edu.ph',
+        ])
+            ->assertOk()
+            ->assertJsonPath(
+                'message',
+                'If your email is registered in our system, you will receive a password reset link shortly.'
+            );
+
+        Http::assertNothingSent();
+        $this->assertDatabaseMissing('password_reset_tokens', [
+            'email' => 'ghost.student@uclm.edu.ph',
+        ]);
+    }
+
+    public function test_brevo_api_failures_401_403_429_500_timeout_and_missing_key_clean_up_token_and_never_log_secrets(): void
+    {
+        $secretApiKey = 'xkeysib-ultra-secret-brevo-key-do-not-leak';
+        $genericMessage = 'If your email is registered in our system, you will receive a password reset link shortly.';
+
+        // 1. Missing API key: zero HTTP requests, token cleaned up, no secrets logged
+        RateLimiter::clear('forgot-password:' . sha1($this->student->email . '|127.0.0.1'));
+        config([
+            'mail.default' => 'log',
+            'mail.password_reset_driver' => 'brevo_api',
+            'services.brevo.api_key' => '',
+            'app.frontend_url' => 'https://scms-uclm.vercel.app',
+        ]);
+
+        $timeoutInvocations = 0;
+        Http::fake([
+            BrevoApiService::ENDPOINT => Http::sequence()
+                ->push(['code' => 'unauthorized', 'message' => "Simulated 401 with {$secretApiKey}"], 401)
+                ->push(['code' => 'forbidden', 'message' => "Simulated 403 with {$secretApiKey}"], 403)
+                ->push(['code' => 'too_many_requests', 'message' => "Simulated 429 with {$secretApiKey}"], 429)
+                ->push(['code' => 'service_unavailable', 'message' => "Simulated 503 with {$secretApiKey}"], 503)
+                ->whenEmpty(function () use (&$timeoutInvocations, $secretApiKey) {
+                    $timeoutInvocations++;
+                    throw new ConnectionException(
+                        "Connection timed out contacting Brevo with key {$secretApiKey}"
+                    );
+                }),
+        ]);
+        Log::spy();
+
+        $this->postJson('/api/forgot-password', [
+            'email' => $this->student->email,
+        ])->assertOk()->assertJsonPath('message', $genericMessage);
+
+        Http::assertNothingSent();
+        $this->assertDatabaseMissing('password_reset_tokens', [
+            'email' => $this->student->email,
+        ]);
+
+        // 2. HTTP 401, 403, 429, and 503 responses: single request each (no duplicate-email retries), token deleted, sanitized log
+        config(['services.brevo.api_key' => $secretApiKey]);
+
+        foreach ([401, 403, 429, 503] as $statusCode) {
+            RateLimiter::clear('forgot-password:' . sha1($this->student->email . '|127.0.0.1'));
+
+            $this->postJson('/api/forgot-password', [
+                'email' => $this->student->email,
+            ])->assertOk()->assertJsonPath('message', $genericMessage);
+
+            $this->assertDatabaseMissing('password_reset_tokens', [
+                'email' => $this->student->email,
+            ]);
+        }
+
+        // 3. Connection timeout exception: handled safely, token deleted, sanitized log
+        RateLimiter::clear('forgot-password:' . sha1($this->student->email . '|127.0.0.1'));
+
+        $this->postJson('/api/forgot-password', [
+            'email' => $this->student->email,
+        ])->assertOk()->assertJsonPath('message', $genericMessage);
+
+        $this->assertDatabaseMissing('password_reset_tokens', [
+            'email' => $this->student->email,
+        ]);
+
+        // 4 recorded HTTP error responses (401, 403, 429, 503) + 1 ConnectionException throw (zero automatic retries)
+        Http::assertSentCount(4);
+        $this->assertSame(1, $timeoutInvocations);
+
+        $studentEmail = $this->student->email;
+        Log::shouldHaveReceived('error')
+            ->atLeast()
+            ->times(6)
+            ->withArgs(function (string $message, array $context = []) use ($secretApiKey, $studentEmail) {
+                if ($message !== 'Password reset notification dispatch failed.') {
+                    return false;
+                }
+                $serialized = (string) json_encode($context);
+                $this->assertSame('brevo_api', $context['transport'] ?? null);
+                $this->assertSame(BrevoApiService::ENDPOINT, $context['endpoint'] ?? null);
+                $this->assertStringNotContainsString($secretApiKey, $serialized);
+                $this->assertStringNotContainsString($studentEmail, $serialized);
+                $this->assertStringNotContainsString('reset-password?token=', $serialized);
+                return true;
+            });
     }
 }
