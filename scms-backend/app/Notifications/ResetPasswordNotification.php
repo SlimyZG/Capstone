@@ -18,7 +18,10 @@ class ResetPasswordNotification extends ResetPassword
             return call_user_func(static::$createUrlCallback, $notifiable, $this->token);
         }
 
-        $frontendUrl = rtrim((string) config('app.frontend_url', 'http://localhost:5173'), '/');
+        $defaultFrontendUrl = app()->environment('production')
+            ? 'https://scms-uclm.vercel.app'
+            : 'http://localhost:5173';
+        $frontendUrl = rtrim((string) (config('app.frontend_url') ?: $defaultFrontendUrl), '/');
         $email = urlencode((string) $notifiable->getEmailForPasswordReset());
         $token = urlencode((string) $this->token);
 

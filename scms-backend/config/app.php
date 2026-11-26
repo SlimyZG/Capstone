@@ -54,7 +54,12 @@ return [
 
     'url' => env('APP_URL', 'http://localhost'),
 
-    'frontend_url' => env('FRONTEND_URL', 'http://localhost:5173'),
+    'frontend_url' => env(
+        'FRONTEND_URL',
+        env('APP_ENV', 'production') === 'production'
+            ? 'https://scms-uclm.vercel.app'
+            : 'http://localhost:5173'
+    ),
 
     /*
     |--------------------------------------------------------------------------
